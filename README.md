@@ -280,7 +280,3 @@ This is an educational project for learning purposes. Cryptocurrency trading car
 ## License
 
 MIT License
-
-## Author
-
-justra
