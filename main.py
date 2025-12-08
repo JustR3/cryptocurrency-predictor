@@ -42,6 +42,254 @@ def compute_bollinger_bands(prices, period=20, num_std=2):
     return upper_band, lower_band, bb_position
 
 
+def walk_forward_backtest(
+    df,
+    feature_columns,
+    initial_capital=10000,
+    trading_fee_bps=5,
+    risk_manager=None,
+    train_window=120,  # Days to use for training
+    retrain_frequency=30,  # Retrain every N days
+):
+    """
+    Walk-forward backtest with periodic model retraining.
+
+    Args:
+        df: Full dataframe with features and target
+        feature_columns: List of feature column names
+        initial_capital: Starting capital in USD
+        trading_fee_bps: Trading fee in basis points
+        risk_manager: RiskManager instance
+        train_window: Number of days to use for training
+        retrain_frequency: How often to retrain the model (in days)
+
+    Returns:
+        Dictionary with backtest metrics
+    """
+    if risk_manager is None:
+        risk_manager = RiskManager()
+    risk_manager.reset()
+    risk_manager.peak_equity = initial_capital
+
+    df = df.copy().reset_index(drop=True)
+
+    # Initialize tracking variables
+    capital = initial_capital
+    position = 0
+    entry_price = 0
+    entry_prob = 0
+    position_size = 0
+    entry_fee = 0
+    entry_idx = 0
+    trades = []
+    equity_curve = [capital]
+    total_fees = 0
+    fee_rate = trading_fee_bps / 10000
+
+    # Calculate volatility for position sizing
+    volatility = calculate_volatility(df["close"])
+
+    model = None
+    last_train_idx = 0
+    num_retrains = 0
+
+    # Walk through the dataframe
+    for i in range(train_window, len(df)):
+        # Retrain model periodically
+        if model is None or (i - last_train_idx) >= retrain_frequency:
+            # Use sliding window for training
+            train_start = max(0, i - train_window)
+            train_end = i
+
+            X_train = df.loc[train_start : train_end - 1, feature_columns]
+            y_train = df.loc[train_start : train_end - 1, "target"]
+
+            # Train new model
+            model = XGBClassifier(
+                n_estimators=300,
+                max_depth=5,
+                learning_rate=0.03,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                min_child_weight=3,
+                random_state=42,
+            )
+            model.fit(X_train, y_train)
+            last_train_idx = i
+            num_retrains += 1
+
+        # Get current prediction
+        X_current = df.loc[i:i, feature_columns]
+        prediction = model.predict(X_current)[0]
+        prob_up = model.predict_proba(X_current)[0][1]
+
+        current_price = df.loc[i, "close"]
+
+        # Check for stop-loss or take-profit exits first
+        if position == 1:
+            should_exit, exit_reason = risk_manager.should_exit_trade(
+                current_price, entry_price, "long"
+            )
+            if should_exit:
+                # Exit position due to risk management
+                exit_price = current_price
+                position_value = position_size * exit_price
+                exit_fee = position_size * exit_price * fee_rate
+                total_fees += exit_fee
+                position_value -= exit_fee
+
+                gross_pnl = position_size * (exit_price - entry_price)
+                net_pnl = gross_pnl - (entry_fee + exit_fee)
+
+                capital += position_value
+
+                trades.append(
+                    {
+                        "entry_idx": entry_idx,
+                        "exit_idx": i,
+                        "entry_price": entry_price,
+                        "exit_price": exit_price,
+                        "gross_pnl": gross_pnl,
+                        "net_pnl": net_pnl,
+                        "fees": entry_fee + exit_fee,
+                        "position_size": position_size,
+                        "entry_prob": entry_prob,
+                        "exit_reason": exit_reason,
+                    }
+                )
+
+                position = 0
+
+        # Entry signal
+        if position == 0 and prediction == 1:
+            # Calculate historical win rate and ratio from past trades
+            if len(trades) > 0:
+                trades_df = pd.DataFrame(trades)
+                win_rate, avg_win_loss_ratio = calculate_win_rate_and_ratio(trades_df)
+            else:
+                win_rate, avg_win_loss_ratio = 0.5, 1.0
+
+            # Calculate position size using risk manager
+            position_size_dollars = risk_manager.calculate_position_size(
+                capital=capital,
+                entry_price=current_price,
+                volatility=volatility,
+                win_rate=win_rate,
+                avg_win_loss_ratio=avg_win_loss_ratio,
+            )
+
+            if position_size_dollars > 0:
+                position_size = position_size_dollars / current_price
+                position = 1
+                entry_price = current_price
+                entry_prob = prob_up
+                entry_idx = i
+
+                entry_fee = position_size * entry_price * fee_rate
+                total_fees += entry_fee
+                capital -= entry_fee
+
+        # Exit signal
+        elif position == 1 and (prediction == 0 or i == len(df) - 1):
+            exit_price = current_price
+            position_value = position_size * exit_price
+            exit_fee = position_size * exit_price * fee_rate
+            total_fees += exit_fee
+            position_value -= exit_fee
+
+            gross_pnl = position_size * (exit_price - entry_price)
+            net_pnl = gross_pnl - (entry_fee + exit_fee)
+
+            capital += position_value
+
+            trades.append(
+                {
+                    "entry_idx": entry_idx,
+                    "exit_idx": i,
+                    "entry_price": entry_price,
+                    "exit_price": exit_price,
+                    "gross_pnl": gross_pnl,
+                    "net_pnl": net_pnl,
+                    "fees": entry_fee + exit_fee,
+                    "position_size": position_size,
+                    "entry_prob": entry_prob,
+                    "exit_reason": "signal",
+                }
+            )
+
+            position = 0
+
+        # Update drawdown tracking
+        current_equity = capital
+        if position == 1:
+            unrealized_pnl = (current_price - entry_price) * position_size
+            current_equity += unrealized_pnl
+
+        risk_manager.update_drawdown(current_equity)
+        equity_curve.append(current_equity)
+
+    # Calculate metrics
+    equity_curve = np.array(equity_curve)
+    total_return = (equity_curve[-1] - initial_capital) / initial_capital
+
+    trades_df = pd.DataFrame(trades) if len(trades) > 0 else pd.DataFrame()
+
+    if len(trades_df) > 0:
+        winning_trades = len(trades_df[trades_df["net_pnl"] > 0])
+        losing_trades = len(trades_df[trades_df["net_pnl"] <= 0])
+        win_rate = winning_trades / len(trades_df)
+        avg_win = trades_df[trades_df["net_pnl"] > 0]["net_pnl"].mean() if winning_trades > 0 else 0
+        avg_loss = (
+            trades_df[trades_df["net_pnl"] <= 0]["net_pnl"].mean() if losing_trades > 0 else 0
+        )
+        total_fees_paid = trades_df["fees"].sum()
+        profit_factor = (
+            abs(
+                trades_df[trades_df["net_pnl"] > 0]["net_pnl"].sum()
+                / trades_df[trades_df["net_pnl"] < 0]["net_pnl"].sum()
+            )
+            if losing_trades > 0
+            else float("inf")
+        )
+    else:
+        winning_trades = losing_trades = win_rate = avg_win = avg_loss = 0
+        total_fees_paid = 0
+        profit_factor = 0
+
+    total_pnl = equity_curve[-1] - initial_capital
+
+    # Calculate Sharpe Ratio
+    daily_returns = np.diff(equity_curve) / equity_curve[:-1]
+    sharpe_ratio = (
+        np.mean(daily_returns) / (np.std(daily_returns) + 1e-6) * np.sqrt(252)
+        if len(daily_returns) > 1
+        else 0
+    )
+
+    # Calculate Max Drawdown
+    cummax = np.maximum.accumulate(equity_curve)
+    drawdown = (equity_curve - cummax) / cummax
+    max_drawdown = np.min(drawdown)
+
+    return {
+        "final_equity": equity_curve[-1],
+        "total_return_pct": total_return * 100,
+        "total_pnl": total_pnl,
+        "total_fees": total_fees_paid,
+        "num_trades": len(trades_df),
+        "winning_trades": winning_trades,
+        "losing_trades": losing_trades,
+        "win_rate_pct": win_rate * 100,
+        "avg_win": avg_win,
+        "avg_loss": avg_loss,
+        "profit_factor": profit_factor,
+        "sharpe_ratio": sharpe_ratio,
+        "max_drawdown_pct": max_drawdown * 100,
+        "trades": trades_df,
+        "retrains": num_retrains,
+    }
+
+
 def backtest_strategy(
     df_test,
     model,
@@ -388,13 +636,33 @@ risk_manager = RiskManager(
     kelly_fraction=0.3,  # Use 30% of Kelly for moderate risk
 )
 
+# Standard backtest (train once)
 backtest_results = backtest_strategy(
     df_test, model, initial_capital=10000, trading_fee_bps=5, risk_manager=risk_manager
 )
 
-# Print backtest results
+# Walk-forward backtest (retrain periodically)
+risk_manager_wf = RiskManager(
+    max_drawdown_pct=0.15,
+    max_position_size_pct=0.20,
+    stop_loss_pct=0.03,
+    take_profit_pct=0.08,
+    kelly_fraction=0.3,
+)
+
+walkforward_results = walk_forward_backtest(
+    df,
+    feature_columns,
+    initial_capital=10000,
+    trading_fee_bps=5,
+    risk_manager=risk_manager_wf,
+    train_window=80,  # 80 days training (shorter for more test data)
+    retrain_frequency=20,  # Retrain every 20 days
+)
+
+# Print standard backtest results
 print("\n" + "=" * 50)
-print("BACKTEST RESULTS")
+print("STANDARD BACKTEST (Train Once)")
 print("=" * 50)
 print("Initial Capital: $10,000")
 print(f"Final Equity: ${backtest_results['final_equity']:.2f}")
@@ -413,6 +681,50 @@ print(f"Profit Factor: {backtest_results['profit_factor']:.2f}x")
 print()
 print(f"Sharpe Ratio: {backtest_results['sharpe_ratio']:.2f}")
 print(f"Max Drawdown: {backtest_results['max_drawdown_pct']:.2f}%")
+print("=" * 50)
+
+# Print walk-forward backtest results
+print("\n" + "=" * 50)
+print("WALK-FORWARD BACKTEST (Retrain Every 20 Days)")
+print("=" * 50)
+print("Initial Capital: $10,000")
+print(f"Final Equity: ${walkforward_results['final_equity']:.2f}")
+print(f"Total Return: {walkforward_results['total_return_pct']:.2f}%")
+print(f"Total P&L (net): ${walkforward_results['total_pnl']:.2f}")
+print(f"Total Fees Paid: ${walkforward_results['total_fees']:.2f}")
+print(f"Model Retrains: {walkforward_results['retrains']}")
+print()
+print(f"Number of Trades: {walkforward_results['num_trades']}")
+print(f"Winning Trades: {walkforward_results['winning_trades']}")
+print(f"Losing Trades: {walkforward_results['losing_trades']}")
+print(f"Win Rate: {walkforward_results['win_rate_pct']:.1f}%")
+print()
+print(f"Avg Win: ${walkforward_results['avg_win']:.2f}")
+print(f"Avg Loss: ${walkforward_results['avg_loss']:.2f}")
+print(f"Profit Factor: {walkforward_results['profit_factor']:.2f}x")
+print()
+print(f"Sharpe Ratio: {walkforward_results['sharpe_ratio']:.2f}")
+print(f"Max Drawdown: {walkforward_results['max_drawdown_pct']:.2f}%")
+print("=" * 50)
+
+# Comparison summary
+print("\n" + "=" * 50)
+print("BACKTEST COMPARISON")
+print("=" * 50)
+return_diff = walkforward_results["total_return_pct"] - backtest_results["total_return_pct"]
+trades_diff = walkforward_results["num_trades"] - backtest_results["num_trades"]
+print(f"Return Difference: {return_diff:+.2f}% (Walk-Forward vs Standard)")
+print(f"Trade Count Difference: {trades_diff:+d} trades")
+print()
+if walkforward_results["total_return_pct"] > backtest_results["total_return_pct"]:
+    print("✓ Walk-Forward performed BETTER (more realistic)")
+elif walkforward_results["total_return_pct"] < backtest_results["total_return_pct"]:
+    print("⚠ Walk-Forward performed WORSE (more realistic, less overfitting)")
+else:
+    print("= Similar performance between methods")
+print()
+print("Note: Walk-forward testing is more realistic as it simulates")
+print("periodic model retraining that would occur in live trading.")
 print("=" * 50)
 
 # Print risk management metrics
