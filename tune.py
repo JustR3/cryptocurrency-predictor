@@ -30,42 +30,94 @@ def compute_rsi(prices, period=14):
     return rsi
 
 
+def compute_ema(prices, period):
+    """Calculate Exponential Moving Average"""
+    return prices.ewm(span=period, adjust=False).mean()
+
+
+def compute_macd(prices, fast=12, slow=26, signal=9):
+    """Calculate MACD (Moving Average Convergence Divergence)"""
+    ema_fast = compute_ema(prices, fast)
+    ema_slow = compute_ema(prices, slow)
+    macd_line = ema_fast - ema_slow
+    signal_line = compute_ema(macd_line, signal)
+    macd_histogram = macd_line - signal_line
+    return macd_line, signal_line, macd_histogram
+
+
+def compute_bollinger_bands(prices, period=20, num_std=2):
+    """Calculate Bollinger Bands"""
+    sma = prices.rolling(window=period).mean()
+    std = prices.rolling(window=period).std()
+    upper_band = sma + (std * num_std)
+    lower_band = sma - (std * num_std)
+    bb_position = (prices - lower_band) / (upper_band - lower_band)
+    return upper_band, lower_band, bb_position
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description='Tune XGBoost hyperparameters for HYPE/USDT prediction'
+        description="Tune XGBoost hyperparameters for HYPE/USDT prediction"
     )
-    parser.add_argument('--trials', type=int, default=100,
-                        help='Number of optimization trials (default: 100)')
-    parser.add_argument('--folds', type=int, default=5,
-                        help='Number of CV folds (default: 5)')
-    parser.add_argument('--save', action='store_true',
-                        help='Save best parameters to file')
+    parser.add_argument(
+        "--trials", type=int, default=100, help="Number of optimization trials (default: 100)"
+    )
+    parser.add_argument("--folds", type=int, default=5, help="Number of CV folds (default: 5)")
+    parser.add_argument("--save", action="store_true", help="Save best parameters to file")
 
     args = parser.parse_args()
 
-    print("="*60)
+    print("=" * 60)
     print("XGBoost Hyperparameter Tuning for HYPE/USDT")
-    print("="*60)
+    print("=" * 60)
     print()
 
     # Fetch data
     print("Fetching HYPE/USDT data from Hyperliquid...")
     exchange = ccxt.hyperliquid()
-    ohlcv = exchange.fetch_ohlcv('HYPE/USDT', '1d', limit=200)
-    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    ohlcv = exchange.fetch_ohlcv("HYPE/USDT", "1d", limit=200)
+    df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
 
     # Calculate features
-    df['rsi'] = compute_rsi(df['close'], 14)
-    df['vol_change'] = df['volume'].pct_change().fillna(0)
-    df['price_change'] = df['close'].pct_change().shift(-1)
+    df["rsi"] = compute_rsi(df["close"], 14)
+
+    # MACD indicators
+    macd_line, signal_line, macd_histogram = compute_macd(df["close"])
+    df["macd"] = macd_line
+    df["macd_signal"] = signal_line
+    df["macd_histogram"] = macd_histogram
+
+    # Bollinger Bands
+    upper_band, lower_band, bb_position = compute_bollinger_bands(df["close"])
+    df["bb_upper"] = upper_band
+    df["bb_lower"] = lower_band
+    df["bb_position"] = bb_position
+
+    # EMA indicators
+    df["ema_9"] = compute_ema(df["close"], 9)
+    df["ema_21"] = compute_ema(df["close"], 21)
+    df["ema_50"] = compute_ema(df["close"], 50)
+
+    # Price relative to EMAs
+    df["price_above_ema9"] = (df["close"] > df["ema_9"]).astype(int)
+    df["price_above_ema21"] = (df["close"] > df["ema_21"]).astype(int)
+    df["price_above_ema50"] = (df["close"] > df["ema_50"]).astype(int)
+
+    # Volume analysis
+    df["vol_change"] = df["volume"].pct_change().fillna(0)
+    df["vol_sma_ratio"] = df["volume"] / df["volume"].rolling(window=20).mean()
+
+    # Price momentum
+    df["price_change"] = df["close"].pct_change().shift(-1)
+    df["price_momentum_5d"] = df["close"].pct_change(5)
 
     # Manual inputs
-    df['macro_score'] = 0.6
-    df['unlock_pressure'] = 0.15
+    df["macro_score"] = 0.6
+    df["unlock_pressure"] = 0.15
 
     # Target
-    df['target'] = (df['close'].pct_change(7).shift(-7) > 0.05).astype(int)
+    df["target"] = (df["close"].pct_change(7).shift(-7) > 0.05).astype(int)
 
     # Drop NaNs
     df = df.dropna()
@@ -74,12 +126,24 @@ def main():
     print()
 
     # Prepare training data
-    X = df[['rsi', 'vol_change', 'macro_score', 'unlock_pressure']]
-    y = df['target']
+    feature_columns = [
+        "rsi",
+        "macd",
+        "macd_histogram",
+        "bb_position",
+        "price_above_ema9",
+        "price_above_ema21",
+        "price_above_ema50",
+        "vol_change",
+        "vol_sma_ratio",
+        "price_momentum_5d",
+        "macro_score",
+        "unlock_pressure",
+    ]
+    X = df[feature_columns]
+    y = df["target"]
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, shuffle=False
-    )
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
 
     print(f"Training set size: {len(X_train)}")
     print(f"Test set size: {len(X_test)}")
@@ -90,14 +154,11 @@ def main():
     print()
 
     best_params = tune_hyperparameters(
-        X_train, y_train,
-        n_trials=args.trials,
-        n_splits=args.folds,
-        verbose=True
+        X_train, y_train, n_trials=args.trials, n_splits=args.folds, verbose=True
     )
 
     print()
-    print("="*60)
+    print("=" * 60)
 
     # Train final model with best parameters
     print("\nTraining final model with best parameters...")
@@ -113,8 +174,8 @@ def main():
 
     # Save if requested
     if args.save:
-        filename = 'best_hyperparameters.json'
-        with open(filename, 'w') as f:
+        filename = "best_hyperparameters.json"
+        with open(filename, "w") as f:
             json.dump(best_params, f, indent=2)
         print(f"✓ Best parameters saved to {filename}")
         print()
@@ -122,8 +183,8 @@ def main():
         print("  model = XGBClassifier(**best_params)")
         print()
 
-    print("="*60)
+    print("=" * 60)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

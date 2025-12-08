@@ -17,6 +17,31 @@ def compute_rsi(prices, period=14):
     return rsi
 
 
+def compute_ema(prices, period):
+    """Calculate Exponential Moving Average"""
+    return prices.ewm(span=period, adjust=False).mean()
+
+
+def compute_macd(prices, fast=12, slow=26, signal=9):
+    """Calculate MACD (Moving Average Convergence Divergence)"""
+    ema_fast = compute_ema(prices, fast)
+    ema_slow = compute_ema(prices, slow)
+    macd_line = ema_fast - ema_slow
+    signal_line = compute_ema(macd_line, signal)
+    macd_histogram = macd_line - signal_line
+    return macd_line, signal_line, macd_histogram
+
+
+def compute_bollinger_bands(prices, period=20, num_std=2):
+    """Calculate Bollinger Bands"""
+    sma = prices.rolling(window=period).mean()
+    std = prices.rolling(window=period).std()
+    upper_band = sma + (std * num_std)
+    lower_band = sma - (std * num_std)
+    bb_position = (prices - lower_band) / (upper_band - lower_band)  # 0-1 position in band
+    return upper_band, lower_band, bb_position
+
+
 def backtest_strategy(
     df_test,
     model,
@@ -47,7 +72,21 @@ def backtest_strategy(
     df_test = df_test.copy()
 
     # Generate predictions and probabilities
-    X_test = df_test[["rsi", "vol_change", "macro_score", "unlock_pressure"]]
+    feature_columns = [
+        "rsi",
+        "macd",
+        "macd_histogram",
+        "bb_position",
+        "price_above_ema9",
+        "price_above_ema21",
+        "price_above_ema50",
+        "vol_change",
+        "vol_sma_ratio",
+        "price_momentum_5d",
+        "macro_score",
+        "unlock_pressure",
+    ]
+    X_test = df_test[feature_columns]
     df_test["prediction"] = model.predict(X_test)
     df_test["prob_up"] = model.predict_proba(X_test)[:, 1]
 
@@ -254,10 +293,38 @@ ohlcv = exchange.fetch_ohlcv("HYPE/USDT", "1d", limit=200)
 df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
 df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
 
-# Features
+# Technical Indicators
 df["rsi"] = compute_rsi(df["close"], 14)
+
+# MACD indicators
+macd_line, signal_line, macd_histogram = compute_macd(df["close"])
+df["macd"] = macd_line
+df["macd_signal"] = signal_line
+df["macd_histogram"] = macd_histogram
+
+# Bollinger Bands
+upper_band, lower_band, bb_position = compute_bollinger_bands(df["close"])
+df["bb_upper"] = upper_band
+df["bb_lower"] = lower_band
+df["bb_position"] = bb_position  # Where price is within the bands (0=lower, 1=upper)
+
+# EMA indicators
+df["ema_9"] = compute_ema(df["close"], 9)
+df["ema_21"] = compute_ema(df["close"], 21)
+df["ema_50"] = compute_ema(df["close"], 50)
+
+# Price relative to EMAs (momentum indicators)
+df["price_above_ema9"] = (df["close"] > df["ema_9"]).astype(int)
+df["price_above_ema21"] = (df["close"] > df["ema_21"]).astype(int)
+df["price_above_ema50"] = (df["close"] > df["ema_50"]).astype(int)
+
+# Volume analysis
 df["vol_change"] = df["volume"].pct_change().fillna(0)
+df["vol_sma_ratio"] = df["volume"] / df["volume"].rolling(window=20).mean()  # Volume vs average
+
+# Price momentum
 df["price_change"] = df["close"].pct_change().shift(-1)  # Next day return
+df["price_momentum_5d"] = df["close"].pct_change(5)  # 5-day momentum
 
 # Manual inputs (updated Dec 7, 2025)
 df["macro_score"] = 0.6  # Fed paused, inflation sticky
@@ -270,15 +337,35 @@ df["target"] = (df["close"].pct_change(7).shift(-7) > 0.05).astype(int)
 df = df.dropna()
 
 # Features for model
-X = df[["rsi", "vol_change", "macro_score", "unlock_pressure"]]
+feature_columns = [
+    "rsi",
+    "macd",
+    "macd_histogram",
+    "bb_position",
+    "price_above_ema9",
+    "price_above_ema21",
+    "price_above_ema50",
+    "vol_change",
+    "vol_sma_ratio",
+    "price_momentum_5d",
+    "macro_score",
+    "unlock_pressure",
+]
+X = df[feature_columns]
 y = df["target"]
 
 # Train-test split
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
 
-# XGBoost model
+# XGBoost model - adjusted for more features
 model = XGBClassifier(
-    n_estimators=200, max_depth=4, learning_rate=0.05, subsample=0.8, random_state=42
+    n_estimators=300,
+    max_depth=5,
+    learning_rate=0.03,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    min_child_weight=3,
+    random_state=42,
 )
 model.fit(X_train, y_train)
 
@@ -286,6 +373,11 @@ model.fit(X_train, y_train)
 X_test_with_idx = X_test.copy()
 y_test_with_idx = y_test.copy()
 df_test = df.loc[X_test.index].copy()
+
+# Feature importance analysis
+feature_importance = pd.DataFrame(
+    {"feature": feature_columns, "importance": model.feature_importances_}
+).sort_values("importance", ascending=False)
 
 # Run comprehensive backtest with risk management
 risk_manager = RiskManager(
@@ -327,13 +419,20 @@ print("=" * 50)
 risk_metrics = risk_manager.get_risk_metrics()
 print("\nRISK MANAGEMENT METRICS")
 print("=" * 50)
-print(f"Max Drawdown Limit: {risk_metrics['max_drawdown_limit']*100:.1f}%")
-print(f"Current Drawdown: {risk_metrics['current_drawdown']*100:.2f}%")
-print(f"Max Position Size: {risk_metrics['max_position_size_pct']*100:.1f}% of capital")
-print(f"Stop Loss: {risk_metrics['stop_loss_pct']*100:.1f}%")
-print(f"Take Profit: {risk_metrics['take_profit_pct']*100:.1f}%")
-print(f"Kelly Fraction: {risk_metrics['kelly_fraction']*100:.1f}%")
+print(f"Max Drawdown Limit: {risk_metrics['max_drawdown_limit'] * 100:.1f}%")
+print(f"Current Drawdown: {risk_metrics['current_drawdown'] * 100:.2f}%")
+print(f"Max Position Size: {risk_metrics['max_position_size_pct'] * 100:.1f}% of capital")
+print(f"Stop Loss: {risk_metrics['stop_loss_pct'] * 100:.1f}%")
+print(f"Take Profit: {risk_metrics['take_profit_pct'] * 100:.1f}%")
+print(f"Kelly Fraction: {risk_metrics['kelly_fraction'] * 100:.1f}%")
 print(f"Trading Enabled: {risk_metrics['trading_enabled']}")
+print("=" * 50)
+
+# Print feature importance
+print("\nFEATURE IMPORTANCE (Top 5)")
+print("=" * 50)
+for idx, row in feature_importance.head(5).iterrows():
+    print(f"{row['feature']}: {row['importance']:.4f}")
 print("=" * 50)
 
 
@@ -342,8 +441,16 @@ current = pd.DataFrame(
     [
         {
             "rsi": df["rsi"].iloc[-1],
+            "macd": df["macd"].iloc[-1],
+            "macd_histogram": df["macd_histogram"].iloc[-1],
+            "bb_position": df["bb_position"].iloc[-1],
+            "price_above_ema9": df["price_above_ema9"].iloc[-1],
+            "price_above_ema21": df["price_above_ema21"].iloc[-1],
+            "price_above_ema50": df["price_above_ema50"].iloc[-1],
             "vol_change": df["vol_change"].iloc[-1],
-            "macro_score": 0.6,  # Keep manual inputs if needed
+            "vol_sma_ratio": df["vol_sma_ratio"].iloc[-1],
+            "price_momentum_5d": df["price_momentum_5d"].iloc[-1],
+            "macro_score": 0.6,
             "unlock_pressure": 0.15,
         }
     ]
