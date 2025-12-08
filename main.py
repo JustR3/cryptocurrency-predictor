@@ -1,3 +1,6 @@
+import json
+import os
+
 import ccxt
 import numpy as np
 import pandas as pd
@@ -5,6 +8,34 @@ from sklearn.model_selection import train_test_split
 from xgboost import XGBClassifier
 
 from risk_management import RiskManager, calculate_volatility, calculate_win_rate_and_ratio
+
+
+def load_hyperparameters(filepath="best_hyperparameters.json"):
+    """
+    Load hyperparameters from JSON file if it exists.
+
+    Args:
+        filepath: Path to the hyperparameters JSON file
+
+    Returns:
+        Dictionary of hyperparameters, or default parameters if file doesn't exist
+    """
+    if os.path.exists(filepath):
+        with open(filepath, "r") as f:
+            params = json.load(f)
+        print(f"✓ Loaded optimized hyperparameters from {filepath}")
+        return params
+    else:
+        print(f"⚠ No {filepath} found, using default hyperparameters")
+        return {
+            "n_estimators": 300,
+            "max_depth": 5,
+            "learning_rate": 0.03,
+            "subsample": 0.8,
+            "colsample_bytree": 0.8,
+            "min_child_weight": 3,
+            "gamma": 0,
+        }
 
 
 def compute_rsi(prices, period=14):
@@ -104,16 +135,10 @@ def walk_forward_backtest(
             X_train = df.loc[train_start : train_end - 1, feature_columns]
             y_train = df.loc[train_start : train_end - 1, "target"]
 
-            # Train new model
-            model = XGBClassifier(
-                n_estimators=300,
-                max_depth=5,
-                learning_rate=0.03,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                min_child_weight=3,
-                random_state=42,
-            )
+            # Train new model with optimized hyperparameters
+            hyperparams = load_hyperparameters()
+            hyperparams["random_state"] = 42  # Always use fixed seed for reproducibility
+            model = XGBClassifier(**hyperparams)
             model.fit(X_train, y_train)
             last_train_idx = i
             num_retrains += 1
@@ -605,16 +630,17 @@ y = df["target"]
 # Train-test split
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
 
-# XGBoost model - adjusted for more features
-model = XGBClassifier(
-    n_estimators=300,
-    max_depth=5,
-    learning_rate=0.03,
-    subsample=0.8,
-    colsample_bytree=0.8,
-    min_child_weight=3,
-    random_state=42,
-)
+# Load optimized hyperparameters from tune.py results
+hyperparams = load_hyperparameters()
+hyperparams["random_state"] = 42  # Always use fixed seed for reproducibility
+
+print("\nUsing hyperparameters:")
+for key, value in hyperparams.items():
+    print(f"  {key}: {value}")
+print()
+
+# XGBoost model with optimized hyperparameters
+model = XGBClassifier(**hyperparams)
 model.fit(X_train, y_train)
 
 # Get test data with original indices preserved
