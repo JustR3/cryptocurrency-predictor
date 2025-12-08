@@ -4,6 +4,8 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 from xgboost import XGBClassifier
 
+from risk_management import RiskManager, calculate_volatility, calculate_win_rate_and_ratio
+
 
 def compute_rsi(prices, period=14):
     """Calculate RSI (Relative Strength Index)"""
@@ -19,22 +21,29 @@ def backtest_strategy(
     df_test,
     model,
     initial_capital=10000,
-    position_size_pct=0.1,
     trading_fee_bps=5,
+    risk_manager=None,
 ):
     """
-    Backtest the trading strategy with proper P&L calculation.
+    Backtest the trading strategy with risk management.
 
     Args:
         df_test: Test dataframe with features and actual close prices
         model: Trained XGBoost model
         initial_capital: Starting capital in USD
-        position_size_pct: Percentage of capital to risk per trade (0.1 = 10%)
         trading_fee_bps: Trading fee in basis points (5 bps = 0.05%)
+        risk_manager: RiskManager instance for position sizing and risk control
 
     Returns:
         Dictionary with backtest metrics
     """
+    df_test = df_test.copy()
+
+    # Initialize risk manager if not provided
+    if risk_manager is None:
+        risk_manager = RiskManager()
+    risk_manager.reset()  # Reset for new backtest
+    risk_manager.peak_equity = initial_capital  # Initialize peak equity
     df_test = df_test.copy()
 
     # Generate predictions and probabilities
@@ -48,46 +57,109 @@ def backtest_strategy(
     entry_price = 0
     entry_prob = 0
     position_size = 0
+    stop_loss_price = 0
+    take_profit_price = 0
+    entry_fee = 0  # Initialize entry_fee
+    entry_idx = 0  # Initialize entry_idx
     trades = []
     equity_curve = [capital]
     total_fees = 0
 
     fee_rate = trading_fee_bps / 10000
 
+    # Calculate volatility for position sizing
+    volatility = calculate_volatility(df_test["close"])
+
     # Walk through test set
     for i in range(len(df_test)):
         current_price = df_test["close"].iloc[i]
 
+        # Check for stop-loss or take-profit exits first
+        if position == 1:
+            should_exit, exit_reason = risk_manager.should_exit_trade(
+                current_price, entry_price, "long"
+            )
+            if should_exit:
+                # Exit position due to risk management
+                exit_price = current_price
+                position_value = position_size * exit_price
+                exit_fee = position_size * exit_price * fee_rate
+                total_fees += exit_fee
+                position_value -= exit_fee
+
+                gross_pnl = position_size * (exit_price - entry_price)
+                net_pnl = gross_pnl - (entry_fee + exit_fee)
+
+                capital += position_value
+
+                trades.append(
+                    {
+                        "entry_idx": entry_idx,
+                        "exit_idx": i,
+                        "entry_price": entry_price,
+                        "exit_price": exit_price,
+                        "gross_pnl": gross_pnl,
+                        "net_pnl": net_pnl,
+                        "fees": entry_fee + exit_fee,
+                        "position_size": position_size,
+                        "entry_prob": entry_prob,
+                        "exit_reason": exit_reason,
+                    }
+                )
+
+                position = 0
+
         # Entry signal: prediction = 1 (expecting up move)
         if position == 0 and df_test["prediction"].iloc[i] == 1:
-            position = 1
-            entry_price = current_price
-            entry_prob = df_test["prob_up"].iloc[i]
-            position_size = (capital * position_size_pct) / current_price
-            # Calculate entry fee
-            entry_fee = position_size * entry_price * fee_rate
-            total_fees += entry_fee
-            capital -= entry_fee
+            # Calculate historical win rate and ratio from past trades
+            if len(trades) > 0:
+                trades_df = pd.DataFrame(trades)
+                win_rate, avg_win_loss_ratio = calculate_win_rate_and_ratio(trades_df)
+            else:
+                win_rate, avg_win_loss_ratio = 0.5, 1.0  # Default values
 
-        # Exit signal: prediction = 0 OR we're at the 7-day target horizon
+            # Calculate position size using risk manager
+            position_size_dollars = risk_manager.calculate_position_size(
+                capital=capital,
+                entry_price=current_price,
+                volatility=volatility,
+                win_rate=win_rate,
+                avg_win_loss_ratio=avg_win_loss_ratio,
+            )
+
+            if position_size_dollars > 0:  # Only enter if risk manager allows
+                position_size = position_size_dollars / current_price
+                position = 1
+                entry_price = current_price
+                entry_prob = df_test["prob_up"].iloc[i]
+                entry_idx = i
+
+                # Calculate stop-loss and take-profit levels
+                stop_loss_price, take_profit_price = risk_manager.calculate_stop_levels(
+                    entry_price, "long"
+                )
+
+                # Calculate entry fee
+                entry_fee = position_size * entry_price * fee_rate
+                total_fees += entry_fee
+                capital -= entry_fee
+
+        # Exit signal: prediction = 0 OR we're at the end
         elif position == 1 and (df_test["prediction"].iloc[i] == 0 or i == len(df_test) - 1):
             exit_price = current_price
             position_value = position_size * exit_price
-            # Calculate exit fee
             exit_fee = position_size * exit_price * fee_rate
             total_fees += exit_fee
             position_value -= exit_fee
 
-            # Calculate P&L (gross of fees)
             gross_pnl = position_size * (exit_price - entry_price)
-            # Net P&L (after fees)
             net_pnl = gross_pnl - (entry_fee + exit_fee)
 
             capital += position_value
 
             trades.append(
                 {
-                    "entry_idx": i - 1,
+                    "entry_idx": entry_idx,
                     "exit_idx": i,
                     "entry_price": entry_price,
                     "exit_price": exit_price,
@@ -96,18 +168,22 @@ def backtest_strategy(
                     "fees": entry_fee + exit_fee,
                     "position_size": position_size,
                     "entry_prob": entry_prob,
+                    "exit_reason": "signal",
                 }
             )
 
             position = 0
 
+        # Update drawdown tracking
+        current_equity = capital
+        if position == 1:
+            unrealized_pnl = (current_price - entry_price) * position_size
+            current_equity += unrealized_pnl
+
+        risk_manager.update_drawdown(current_equity)
+
         # Track equity
-        if position == 0:
-            equity_curve.append(capital)
-        else:
-            # Unrealized P&L
-            unrealized = (current_price - entry_price) / entry_price - 2 * fee_rate
-            equity_curve.append(capital * (1 + (unrealized * position_size_pct)))
+        equity_curve.append(current_equity)
 
     # Calculate metrics
     equity_curve = np.array(equity_curve)
@@ -211,9 +287,17 @@ X_test_with_idx = X_test.copy()
 y_test_with_idx = y_test.copy()
 df_test = df.loc[X_test.index].copy()
 
-# Run comprehensive backtest
+# Run comprehensive backtest with risk management
+risk_manager = RiskManager(
+    max_drawdown_pct=0.15,  # 15% max drawdown
+    max_position_size_pct=0.20,  # 20% of capital per trade
+    stop_loss_pct=0.03,  # 3% stop loss
+    take_profit_pct=0.08,  # 8% take profit
+    kelly_fraction=0.3,  # Use 30% of Kelly for moderate risk
+)
+
 backtest_results = backtest_strategy(
-    df_test, model, initial_capital=10000, position_size_pct=0.1, trading_fee_bps=5
+    df_test, model, initial_capital=10000, trading_fee_bps=5, risk_manager=risk_manager
 )
 
 # Print backtest results
@@ -238,7 +322,19 @@ print()
 print(f"Sharpe Ratio: {backtest_results['sharpe_ratio']:.2f}")
 print(f"Max Drawdown: {backtest_results['max_drawdown_pct']:.2f}%")
 print("=" * 50)
-print()
+
+# Print risk management metrics
+risk_metrics = risk_manager.get_risk_metrics()
+print("\nRISK MANAGEMENT METRICS")
+print("=" * 50)
+print(f"Max Drawdown Limit: {risk_metrics['max_drawdown_limit']*100:.1f}%")
+print(f"Current Drawdown: {risk_metrics['current_drawdown']*100:.2f}%")
+print(f"Max Position Size: {risk_metrics['max_position_size_pct']*100:.1f}% of capital")
+print(f"Stop Loss: {risk_metrics['stop_loss_pct']*100:.1f}%")
+print(f"Take Profit: {risk_metrics['take_profit_pct']*100:.1f}%")
+print(f"Kelly Fraction: {risk_metrics['kelly_fraction']*100:.1f}%")
+print(f"Trading Enabled: {risk_metrics['trading_enabled']}")
+print("=" * 50)
 
 
 # Current real-time prediction - use latest values from data
