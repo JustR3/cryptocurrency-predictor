@@ -17,13 +17,27 @@ def main():
     parser.add_argument("--symbol", type=str, default=config.DEFAULT_SYMBOL, help="Trading pair")
     parser.add_argument("--exchange", type=str, default=config.DEFAULT_EXCHANGE, help="Exchange")
     parser.add_argument("--limit", type=int, default=None, help="Days of historical data")
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default=config.DEFAULT_PREDICTION_MODE,
+        choices=["short", "medium", "long"],
+        help="Prediction mode: short (1-3d), medium (3-5d), long (5-10d)",
+    )
     args = parser.parse_args()
+
+    # Get prediction mode parameters
+    mode_params = config.get_prediction_mode_params(args.mode)
 
     print(f"\n{'=' * 60}")
     print(f"CRYPTO PREDICTOR - {args.symbol}")
     print(f"{'=' * 60}")
     print(f"Exchange: {args.exchange}")
     print(f"Data: {config.get_data_limit(args.symbol, args.limit)} days")
+    print(f"Prediction Mode: {mode_params['name']}")
+    print(f"  Time Horizon: {mode_params['time_horizon']} days")
+    print(f"  Profit Target: {mode_params['profit_pct'] * 100:.1f}%")
+    print(f"  Stop Loss: {mode_params['loss_pct'] * 100:.1f}%")
     print(f"{'=' * 60}\n")
 
     # Fetch data
@@ -36,7 +50,12 @@ def main():
     # Create features
     print("Creating features...")
     df = create_features(df, btc_df, funding_df)
-    df["target"] = create_triple_barrier_labels(df)
+    df["target"] = create_triple_barrier_labels(
+        df,
+        profit_pct=mode_params["profit_pct"],
+        loss_pct=mode_params["loss_pct"],
+        time_horizon=mode_params["time_horizon"],
+    )
     # Remap labels from {-1, 0, 1} to {0, 1, 2} for XGBoost
     df["target"] = df["target"].map({-1: 0, 0: 1, 1: 2})
     df = df.dropna()

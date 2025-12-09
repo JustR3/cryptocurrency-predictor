@@ -102,11 +102,22 @@ def main():
     parser.add_argument("--trials", type=int, default=config.OPTUNA_N_TRIALS, help="Trials")
     parser.add_argument("--folds", type=int, default=config.OPTUNA_N_FOLDS, help="CV folds")
     parser.add_argument("--save", action="store_true", help="Save best parameters")
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default=config.DEFAULT_PREDICTION_MODE,
+        choices=["short", "medium", "long"],
+        help="Prediction mode: short (1-3d), medium (3-5d), long (5-10d)",
+    )
     args = parser.parse_args()
+
+    # Get prediction mode parameters
+    mode_params = config.get_prediction_mode_params(args.mode)
 
     print(f"\n{'=' * 60}")
     print(f"HYPERPARAMETER TUNING - {args.symbol}")
     print(f"Optimizing for: {config.OPTUNA_METRIC.upper()}")
+    print(f"Prediction Mode: {mode_params['name']}")
     print(f"{'=' * 60}\n")
 
     # Fetch and prepare data
@@ -116,7 +127,12 @@ def main():
     funding_df = fetch_funding_rate(args.symbol, args.exchange, args.limit)
 
     df = create_features(df, btc_df, funding_df)
-    df["target"] = create_triple_barrier_labels(df)
+    df["target"] = create_triple_barrier_labels(
+        df,
+        profit_pct=mode_params["profit_pct"],
+        loss_pct=mode_params["loss_pct"],
+        time_horizon=mode_params["time_horizon"],
+    )
     # Remap labels from {-1, 0, 1} to {0, 1, 2} for XGBoost
     df["target"] = df["target"].map({-1: 0, 0: 1, 1: 2})
     df = df.dropna()

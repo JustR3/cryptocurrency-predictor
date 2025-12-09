@@ -4,6 +4,7 @@
 
 ### Core System
 - [x] **Triple Barrier Method implementation** - Industry-standard labeling for realistic trade outcomes
+- [x] **Multi-horizon prediction modes** - Short (1-3d), Medium (3-5d), Long (5-10d) with adaptive barriers
 - [x] **Multi-exchange support** - Works with 100+ exchanges via CCXT (Binance, Coinbase, Kraken, Bybit, OKX, Hyperliquid)
 - [x] **XGBoost strategy** - Machine learning model with proper time-series handling
 - [x] **Volatility targeting** - Dynamic position sizing based on market volatility
@@ -17,6 +18,7 @@
 - [x] **CLI interface** - Simple command-line interface with flexible options
 - [x] **Type hints** - Full type annotation across all modules
 - [x] **Centralized configuration** - All settings in `config.py`
+- [x] **Feature importance analysis** - Tool to identify and rank feature contributions
 
 ### Documentation
 - [x] **Comprehensive README** - Installation, usage, methodology, project structure
@@ -66,12 +68,71 @@
   - [x] Verify file naming convention consistency - ✅ Uses underscore separator
   - [x] Add validation for saved JSON structure - ✅ Handled by save_hyperparameters()
 
-## Future Enhancements (Post-Refactor)
+### Phase 4: Multi-Horizon Prediction ✅ COMPLETED
+- [x] **Implement prediction mode system**
+  - [x] Add PREDICTION_MODES config with short/medium/long horizons
+  - [x] Create `get_prediction_mode_params()` helper function
+  - [x] Update Triple Barrier to accept dynamic parameters
+  - [x] Add `--mode` CLI argument to main.py, tune.py, feature_analysis.py
+  - [x] Maintain backward compatibility with legacy config values
+
+### Phase 5: Feature Analysis & Optimization 🔄 IN PROGRESS
+- [x] **Create feature analysis tool** (`feature_analysis.py`)
+  - [x] Train full model and extract feature importance scores
+  - [x] Rank features by contribution to predictions
+  - [x] Identify low/zero importance features
+  - [x] Calculate cumulative importance coverage (80%, 90%, 95%)
+  - [x] Generate recommendations for feature optimization
+  - [x] Support all prediction modes (short/medium/long)
+
+- [ ] **Conduct comprehensive feature analysis**
+  - [ ] Run analysis on multiple symbols (BTC, ETH, SOL, + 5 more)
+  - [ ] Test across all 3 prediction modes (short, medium, long)
+  - [ ] Document consistent patterns in feature importance
+  - [ ] Identify features to remove (funding_rate confirmed useless)
+  - [ ] Create optimized FEATURE_COLUMNS configuration
+
+- [ ] **Optimize feature set**
+  - [ ] Remove zero-contribution features (funding_rate)
+  - [ ] Test optimized feature sets via backtesting
+  - [ ] Compare Sharpe Ratios: All features vs Top 90% vs Top 80%
+  - [ ] Update config.py with final optimized FEATURE_COLUMNS
+  - [ ] Document performance improvements
+
+## Future Enhancements (Post-Optimization)
 - [ ] Implement probabilistic targets (quantile regression)
-- [ ] Add multi-horizon predictions (1d, 3d, 7d)
-- [ ] Explore alternative models (LightGBM, Random Forest)
-- [ ] Add cross-asset features (SPY, DXY, Gold)
-- [ ] Implement online learning for incremental updates
+- [ ] Explore alternative models (LightGBM, Random Forest, CatBoost)
+- [ ] Add cross-asset features (SPY, DXY, Gold correlations)
+- [ ] Implement online learning for incremental model updates
+- [ ] Add ensemble methods (model stacking/voting)
+- [ ] Implement walk-forward optimization for hyperparameters
+- [ ] Add real-time data streaming for live trading
+
+---
+
+## Usage Examples
+
+### Run with different prediction modes:
+```bash
+# Short-term prediction (1-3 days)
+python main.py --symbol BTC/USDT --mode short
+
+# Medium-term prediction (3-5 days, default)
+python main.py --symbol BTC/USDT --mode medium
+
+# Long-term prediction (5-10 days)
+python main.py --symbol BTC/USDT --mode long
+```
+
+### Hyperparameter tuning with mode:
+```bash
+python tune.py --symbol SOL/USDT --mode short --trials 100 --save
+```
+
+### Feature analysis with mode:
+```bash
+python feature_analysis.py --symbol ETH/USDC --mode long
+```
 
 ---
 

@@ -40,11 +40,38 @@ ATR_PERIOD = 14
 MOMENTUM_PERIODS = [3, 5, 7]  # Days for momentum calculation
 VOLATILITY_WINDOW = 14
 
-# Triple Barrier Method Parameters
-# Adjusted for realistic daily trading (not swing trading)
-# 2:1 risk/reward ratio with tighter, achievable targets
-BARRIER_PROFIT_PCT = 0.04  # 4% take profit (realistic for crypto)
-BARRIER_LOSS_PCT = 0.02  # 2% stop loss (2:1 ratio)
+# Prediction Mode Configuration
+# Determines the prediction horizon and Triple Barrier parameters
+PREDICTION_MODES = {
+    "short": {
+        "name": "Short-term (1-3 days)",
+        "time_horizon": 3,
+        "profit_pct": 0.03,  # 3% profit target
+        "loss_pct": 0.015,  # 1.5% stop loss (2:1 ratio)
+        "description": "Quick trades, tight targets",
+    },
+    "medium": {
+        "name": "Medium-term (3-5 days)",
+        "time_horizon": 5,
+        "profit_pct": 0.05,  # 5% profit target
+        "loss_pct": 0.025,  # 2.5% stop loss (2:1 ratio)
+        "description": "Balanced swing trades",
+    },
+    "long": {
+        "name": "Long-term (5-10 days)",
+        "time_horizon": 10,
+        "profit_pct": 0.08,  # 8% profit target
+        "loss_pct": 0.04,  # 4% stop loss (2:1 ratio)
+        "description": "Position trades, wider targets",
+    },
+}
+
+DEFAULT_PREDICTION_MODE = "medium"  # Default to medium-term
+
+# Triple Barrier Method Parameters (Legacy - kept for backward compatibility)
+# Use PREDICTION_MODES for multi-horizon support
+BARRIER_PROFIT_PCT = 0.05  # 5% take profit
+BARRIER_LOSS_PCT = 0.025  # 2.5% stop loss (2:1 ratio)
 BARRIER_TIME_HORIZON = 5  # 5 days max holding period
 
 # Risk Management
@@ -157,3 +184,23 @@ def get_default_hyperparameters(symbol: str) -> dict:
     params = XGBOOST_DEFAULTS[asset_class].copy()
     params["random_state"] = RANDOM_STATE
     return params
+
+
+def get_prediction_mode_params(mode: str = DEFAULT_PREDICTION_MODE) -> dict:
+    """
+    Get Triple Barrier parameters for a specific prediction mode.
+
+    Args:
+        mode: Prediction mode ('short', 'medium', or 'long')
+
+    Returns:
+        Dictionary with time_horizon, profit_pct, and loss_pct
+
+    Raises:
+        ValueError: If mode is not recognized
+    """
+    if mode not in PREDICTION_MODES:
+        raise ValueError(
+            f"Invalid prediction mode '{mode}'. Must be one of: {list(PREDICTION_MODES.keys())}"
+        )
+    return PREDICTION_MODES[mode]
