@@ -1,13 +1,31 @@
 # Cryptocurrency Price Predictor
 
-A machine learning-based trading strategy for predicting cryptocurrency price movements across multiple exchanges.
+A machine learning-based trading strategy for predicting cryptocurrency market regimes and generating adaptive trading signals across multiple exchanges.
 
 ## Overview
 
-This project uses XGBoost machine learning to predict whether a cryptocurrency will experience a >5% price increase over a 7-day period. The model combines 12 technical indicators (RSI, MACD, EMA, Bollinger Bands, volume analysis), risk management, and macro-sentiment inputs to generate trading signals with comprehensive backtesting.
+This project uses XGBoost machine learning to classify cryptocurrency market conditions into **4 distinct regimes** (Bull Run, Ranging, Bear Market, High Volatility) using a 7-day forward-looking window. The model combines 12 technical indicators (RSI, MACD, EMA, Bollinger Bands, volume analysis), risk management, and macro-sentiment inputs to generate adaptive trading signals with comprehensive backtesting.
+
+### Market Regime Classification
+
+Instead of simple binary predictions, the model classifies market conditions into 4 regimes:
+
+- **Bull Run** (Class 0): Strong uptrend (>10% weekly gain + positive momentum)
+  - Strategy: Long positions with larger size (1.2x multiplier)
+- **Ranging Market** (Class 1): Sideways movement (±3% weekly, low volatility)
+  - Strategy: Small positions (0.7x multiplier), mean reversion
+- **Bear Market** (Class 2): Strong downtrend (>5% weekly loss + negative momentum)
+  - Strategy: Stay in cash or consider shorts
+- **High Volatility** (Class 3): Large swings regardless of direction (>15% weekly move)
+  - Strategy: Very small positions (0.5x multiplier) with wider stops
+
+This regime-based approach allows the strategy to adapt position sizing and entry/exit logic based on market conditions rather than making simplistic binary predictions.
 
 ## Features
 
+- **Market Regime Classification**: 4-class prediction (Bull/Ranging/Bear/HighVol) instead of binary signals
+- **Adaptive Position Sizing**: Position size multipliers based on predicted regime (0.5x-1.2x)
+- **CCXT Rate Limiting**: Built-in API throttling to prevent exchange bans
 - **Multi-Symbol/Exchange Support**: Trade any cryptocurrency pair on 100+ exchanges (Binance, Coinbase, Kraken, Hyperliquid, etc.)
 - **Symbol-Specific Hyperparameters**: Optimized parameters for each trading pair with smart defaults by asset class
 - **12 Technical Indicators**: 
@@ -19,6 +37,7 @@ This project uses XGBoost machine learning to predict whether a cryptocurrency w
   - Price momentum indicators
 - **Advanced Risk Management**:
   - Kelly Criterion position sizing
+  - Regime-based position size adjustments
   - Stop-loss and take-profit automation
   - Maximum drawdown limits
   - Capital preservation during adverse conditions
@@ -26,8 +45,8 @@ This project uses XGBoost machine learning to predict whether a cryptocurrency w
   - Standard: Train once on historical data
   - Walk-Forward: Periodic retraining every 20 days (more realistic)
 - **Comprehensive Metrics**: P&L, win rate, profit factor, Sharpe ratio, max drawdown
-- **Hyperparameter Optimization**: Bayesian optimization via Optuna
-- **Real-time Predictions**: Live probability forecasts for upcoming market moves
+- **Hyperparameter Optimization**: Bayesian optimization via Optuna with multi-class support
+- **Real-time Regime Predictions**: Live market regime classification with confidence scores
 
 ## Installation
 
@@ -228,7 +247,16 @@ Sharpe Ratio: 4.89
 Max Drawdown: -0.89%
 ==================================================
 
-Probability of >5% move up in next 1-4 weeks: 42.1%
+🔮 PREDICTED MARKET REGIME: Ranging Market
+==================================================
+Regime Probabilities:
+   Bull Run: 4.8%
+👉 Ranging Market: 51.9%
+   Bear Market: 43.3%
+   High Volatility: Not detected (insufficient data)
+==================================================
+
+💡 Recommendation: Small positions, mean reversion strategy
 ```
 
 ## Model Architecture
@@ -251,14 +279,50 @@ Probability of >5% move up in next 1-4 weeks: 42.1%
 - **Macro Score**: Market sentiment score (0-1 scale)
 - **Unlock Pressure**: Token unlock/dilution pressure estimate
 
-### Target
-Binary classification: 1 if next 7-day return > 5%, else 0
+### Target Classification (4 Regimes)
+
+The model predicts market regime based on 7-day forward price action:
+
+**Class 0 - Bull Run**:
+- Criteria: >10% weekly gain + positive 3-day momentum
+- Classification logic: Strong uptrend with sustained momentum
+- Trading approach: Long positions with 1.2x position size multiplier
+
+**Class 1 - Ranging Market**:
+- Criteria: ±3% weekly movement + below-median volatility
+- Classification logic: Sideways consolidation with low volatility
+- Trading approach: Small positions (0.7x multiplier), mean reversion strategy
+
+**Class 2 - Bear Market**:
+- Criteria: >5% weekly loss + negative 3-day momentum  
+- Classification logic: Strong downtrend with negative momentum
+- Trading approach: Stay in cash or consider shorts
+
+**Class 3 - High Volatility**:
+- Criteria: >15% absolute weekly move + top-25% volatility
+- Classification logic: Large swings regardless of direction
+- Trading approach: Very small positions (0.5x multiplier) with wider stops
+
+### Regime-Based Trading Logic
+
+**Entry Conditions (by regime)**:
+- Bull: Enter if confidence >50%
+- Ranging: Enter if confidence >55% (more selective)
+- Bear: No entry (stay cash)
+- High Vol: Enter if confidence >60% (very selective)
+
+**Exit Conditions**:
+- Switch to Bear regime (confidence >45%)
+- Low confidence in any regime (<40%)
+- Stop-loss or take-profit hit
+- End of backtest period
 
 ### Risk Management
 - **Kelly Criterion**: Optimal position sizing based on win rate and profit/loss ratio
+- **Regime Multipliers**: Dynamic position sizing (0.5x-1.2x) based on regime
 - **Stop-Loss/Take-Profit**: Automatic exit at 3% loss or 8% gain
 - **Drawdown Protection**: Trading halts if drawdown exceeds 15%
-- **Position Limits**: Maximum 20% of capital per trade
+- **Position Limits**: Maximum 20% of capital per trade (before regime adjustment)
 
 ## Backtest Explanation
 

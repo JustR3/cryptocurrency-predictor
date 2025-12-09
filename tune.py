@@ -91,24 +91,24 @@ def main():
     print("=" * 60)
     print()
 
-    # Fetch data
+    # Fetch data with rate limiting enabled
     print(f"Fetching {symbol} data from {exchange_name}...")
     try:
         if exchange_name == "hyperliquid":
-            exchange = ccxt.hyperliquid()
+            exchange = ccxt.hyperliquid({"enableRateLimit": True})
         elif exchange_name == "binance":
-            exchange = ccxt.binance()
+            exchange = ccxt.binance({"enableRateLimit": True})
         elif exchange_name == "coinbase":
-            exchange = ccxt.coinbase()
+            exchange = ccxt.coinbase({"enableRateLimit": True})
         elif exchange_name == "kraken":
-            exchange = ccxt.kraken()
+            exchange = ccxt.kraken({"enableRateLimit": True})
         elif exchange_name == "bybit":
-            exchange = ccxt.bybit()
+            exchange = ccxt.bybit({"enableRateLimit": True})
         elif exchange_name == "okx":
-            exchange = ccxt.okx()
+            exchange = ccxt.okx({"enableRateLimit": True})
         else:
             exchange_class = getattr(ccxt, exchange_name)
-            exchange = exchange_class()
+            exchange = exchange_class({"enableRateLimit": True})
     except AttributeError:
         print(f"Error: Exchange '{exchange_name}' not supported")
         return
@@ -164,8 +164,34 @@ def main():
     df["macro_score"] = 0.6
     df["unlock_pressure"] = 0.15
 
-    # Target
-    df["target"] = (df["close"].pct_change(7).shift(-7) > 0.05).astype(int)
+    # Regime Classification Target (0=Bull, 1=Ranging, 2=Bear, 3=HighVol)
+    def classify_regime(data):
+        """Classify market regime for tuning."""
+        regimes = pd.Series(index=data.index, dtype=int)
+        weekly_return = data["close"].pct_change(7).shift(-7)
+        volatility = data["close"].pct_change().rolling(14).std().shift(-7)
+        momentum_3d = data["close"].pct_change(3).shift(-7)
+
+        # High Vol
+        high_vol = (volatility > volatility.quantile(0.75)) & (abs(weekly_return) > 0.15)
+        regimes.loc[high_vol] = 3
+
+        # Bull
+        bull = (weekly_return > 0.10) & (momentum_3d > 0.03) & (regimes != 3)
+        regimes.loc[bull] = 0
+
+        # Bear
+        bear = (weekly_return < -0.05) & (momentum_3d < -0.02) & (regimes != 3)
+        regimes.loc[bear] = 2
+
+        # Ranging
+        ranging = (abs(weekly_return) <= 0.03) & (volatility <= volatility.quantile(0.50))
+        regimes.loc[ranging & (regimes != 3)] = 1
+
+        regimes.fillna(1, inplace=True)
+        return regimes.astype(int)
+
+    df["target"] = classify_regime(df)
 
     # Drop NaNs
     df = df.dropna()

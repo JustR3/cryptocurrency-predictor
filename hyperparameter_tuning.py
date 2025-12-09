@@ -33,6 +33,9 @@ def objective(trial, X_train, y_train, n_splits=5):
         "min_child_weight": trial.suggest_int("min_child_weight", 1, 10),
         "gamma": trial.suggest_float("gamma", 0, 5),
         "random_state": 42,
+        # Multi-class classification (4 regime classes)
+        "objective": "multi:softmax",
+        "num_class": 4,
     }
 
     model = XGBClassifier(**params)

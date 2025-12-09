@@ -194,15 +194,21 @@ def walk_forward_backtest(
             # Train new model with optimized hyperparameters
             hyperparams = load_hyperparameters(symbol)
             hyperparams["random_state"] = 42  # Always use fixed seed for reproducibility
+            # Multi-class classification setup (4 regimes)
+            hyperparams["objective"] = "multi:softmax"
+            hyperparams["num_class"] = 4
             model = XGBClassifier(**hyperparams)
             model.fit(X_train, y_train)
             last_train_idx = i
             num_retrains += 1
 
-        # Get current prediction
+        # Get current prediction and probabilities
         X_current = df.loc[i:i, feature_columns]
-        prediction = model.predict(X_current)[0]
-        prob_up = model.predict_proba(X_current)[0][1]
+        regime_prediction = model.predict(X_current)[0]  # 0=Bull, 1=Ranging, 2=Bear, 3=HighVol
+        regime_probs = model.predict_proba(X_current)[0]  # Probabilities for all 4 classes
+
+        # Get confidence for the predicted regime
+        regime_confidence = regime_probs[regime_prediction]
 
         current_price = df.loc[i, "close"]
 
@@ -241,64 +247,106 @@ def walk_forward_backtest(
 
                 position = 0
 
-        # Entry signal
-        if position == 0 and prediction == 1:
-            # Calculate historical win rate and ratio from past trades
-            if len(trades) > 0:
-                trades_df = pd.DataFrame(trades)
-                win_rate, avg_win_loss_ratio = calculate_win_rate_and_ratio(trades_df)
-            else:
-                win_rate, avg_win_loss_ratio = 0.5, 1.0
+        # ===================================================================
+        # REGIME-BASED TRADING LOGIC
+        # ===================================================================
+        # Entry signals based on predicted regime
+        # 0=Bull: Long with larger size, 1=Ranging: Small long, 2=Bear: Stay cash, 3=HighVol: Small position with wide stops
 
-            # Calculate position size using risk manager
-            position_size_dollars = risk_manager.calculate_position_size(
-                capital=capital,
-                entry_price=current_price,
-                volatility=volatility,
-                win_rate=win_rate,
-                avg_win_loss_ratio=avg_win_loss_ratio,
-            )
+        if position == 0:  # No position currently
+            should_enter = False
+            regime_multiplier = 1.0  # Position size multiplier based on regime
 
-            if position_size_dollars > 0:
-                position_size = position_size_dollars / current_price
-                position = 1
-                entry_price = current_price
-                entry_prob = prob_up
-                entry_idx = i
+            if regime_prediction == 0:  # Bull regime
+                should_enter = regime_confidence > 0.50  # Enter if confident
+                regime_multiplier = 1.2  # Larger position in bull market
+            elif regime_prediction == 1:  # Ranging regime
+                should_enter = regime_confidence > 0.55  # Be more selective
+                regime_multiplier = 0.7  # Smaller position in ranging market
+            elif regime_prediction == 3:  # High volatility regime
+                should_enter = regime_confidence > 0.60  # Very selective
+                regime_multiplier = 0.5  # Much smaller position in high vol
+            # regime_prediction == 2 (Bear): stay_cash = True, no entry
 
-                entry_fee = position_size * entry_price * fee_rate
-                total_fees += entry_fee
-                capital -= entry_fee
+            if should_enter:
+                # Calculate historical win rate and ratio from past trades
+                if len(trades) > 0:
+                    trades_df = pd.DataFrame(trades)
+                    win_rate, avg_win_loss_ratio = calculate_win_rate_and_ratio(trades_df)
+                else:
+                    win_rate, avg_win_loss_ratio = 0.5, 1.0
 
-        # Exit signal
-        elif position == 1 and (prediction == 0 or i == len(df) - 1):
-            exit_price = current_price
-            position_value = position_size * exit_price
-            exit_fee = position_size * exit_price * fee_rate
-            total_fees += exit_fee
-            position_value -= exit_fee
+                # Calculate position size using risk manager
+                base_position_size = risk_manager.calculate_position_size(
+                    capital=capital,
+                    entry_price=current_price,
+                    volatility=volatility,
+                    win_rate=win_rate,
+                    avg_win_loss_ratio=avg_win_loss_ratio,
+                )
 
-            gross_pnl = position_size * (exit_price - entry_price)
-            net_pnl = gross_pnl - (entry_fee + exit_fee)
+                # Adjust for regime
+                position_size_dollars = base_position_size * regime_multiplier
 
-            capital += position_value
+                if position_size_dollars > 0:
+                    position_size = position_size_dollars / current_price
+                    position = 1
+                    entry_price = current_price
+                    entry_prob = regime_confidence
+                    entry_idx = i
 
-            trades.append(
-                {
-                    "entry_idx": entry_idx,
-                    "exit_idx": i,
-                    "entry_price": entry_price,
-                    "exit_price": exit_price,
-                    "gross_pnl": gross_pnl,
-                    "net_pnl": net_pnl,
-                    "fees": entry_fee + exit_fee,
-                    "position_size": position_size,
-                    "entry_prob": entry_prob,
-                    "exit_reason": "signal",
-                }
-            )
+                    entry_fee = position_size * entry_price * fee_rate
+                    total_fees += entry_fee
+                    capital -= entry_fee
 
-            position = 0
+        # Exit signals based on regime change
+        elif position == 1:
+            should_exit = False
+            exit_reason = "signal"
+
+            # Exit conditions:
+            # 1. Regime switches to Bear (2)
+            # 2. Last day of backtest
+            # 3. Low confidence in any regime
+
+            if regime_prediction == 2 and regime_confidence > 0.45:  # Bear regime
+                should_exit = True
+                exit_reason = "bear_regime"
+            elif i == len(df) - 1:  # Last day
+                should_exit = True
+                exit_reason = "end_of_period"
+            elif regime_confidence < 0.40:  # Low confidence in any regime
+                should_exit = True
+                exit_reason = "low_confidence"
+
+            if should_exit:
+                exit_price = current_price
+                position_value = position_size * exit_price
+                exit_fee = position_size * exit_price * fee_rate
+                total_fees += exit_fee
+                position_value -= exit_fee
+
+                gross_pnl = position_size * (exit_price - entry_price)
+                net_pnl = gross_pnl - (entry_fee + exit_fee)
+
+                capital += position_value
+
+                trades.append(
+                    {
+                        "entry_idx": entry_idx,
+                        "exit_idx": i,
+                        "entry_price": entry_price,
+                        "exit_price": exit_price,
+                        "gross_pnl": gross_pnl,
+                        "net_pnl": net_pnl,
+                        "fees": entry_fee + exit_fee,
+                        "position_size": position_size,
+                        "entry_prob": entry_prob,
+                        "exit_reason": exit_reason,
+                    }
+                )
+
+                position = 0
 
         # Update drawdown tracking
         current_equity = capital
@@ -416,8 +464,13 @@ def backtest_strategy(
         "unlock_pressure",
     ]
     X_test = df_test[feature_columns]
-    df_test["prediction"] = model.predict(X_test)
-    df_test["prob_up"] = model.predict_proba(X_test)[:, 1]
+    # Regime predictions (0=Bull, 1=Ranging, 2=Bear, 3=HighVol)
+    df_test["regime_prediction"] = model.predict(X_test)
+    # Get probabilities for all 4 regimes
+    regime_probs_all = model.predict_proba(X_test)
+    df_test["regime_confidence"] = [
+        probs[pred] for probs, pred in zip(regime_probs_all, df_test["regime_prediction"])
+    ]
 
     # Initialize tracking variables
     capital = initial_capital
@@ -477,68 +530,103 @@ def backtest_strategy(
 
                 position = 0
 
-        # Entry signal: prediction = 1 (expecting up move)
-        if position == 0 and df_test["prediction"].iloc[i] == 1:
-            # Calculate historical win rate and ratio from past trades
-            if len(trades) > 0:
-                trades_df = pd.DataFrame(trades)
-                win_rate, avg_win_loss_ratio = calculate_win_rate_and_ratio(trades_df)
-            else:
-                win_rate, avg_win_loss_ratio = 0.5, 1.0  # Default values
+        # ===================================================================
+        # REGIME-BASED TEST SET TRADING
+        # ===================================================================
+        regime = df_test["regime_prediction"].iloc[i]  # 0=Bull, 1=Ranging, 2=Bear, 3=HighVol
+        confidence = df_test["regime_confidence"].iloc[i]
 
-            # Calculate position size using risk manager
-            position_size_dollars = risk_manager.calculate_position_size(
-                capital=capital,
-                entry_price=current_price,
-                volatility=volatility,
-                win_rate=win_rate,
-                avg_win_loss_ratio=avg_win_loss_ratio,
-            )
+        # Entry signals based on regime
+        if position == 0:
+            should_enter = False
+            regime_multiplier = 1.0
 
-            if position_size_dollars > 0:  # Only enter if risk manager allows
-                position_size = position_size_dollars / current_price
-                position = 1
-                entry_price = current_price
-                entry_prob = df_test["prob_up"].iloc[i]
-                entry_idx = i
+            if regime == 0:  # Bull
+                should_enter = confidence > 0.50
+                regime_multiplier = 1.2
+            elif regime == 1:  # Ranging
+                should_enter = confidence > 0.55
+                regime_multiplier = 0.7
+            elif regime == 3:  # High Vol
+                should_enter = confidence > 0.60
+                regime_multiplier = 0.5
 
-                # Calculate stop-loss and take-profit levels
-                stop_loss_price, take_profit_price = risk_manager.calculate_stop_levels(
-                    entry_price, "long"
+            if should_enter:
+                # Calculate historical win rate and ratio from past trades
+                if len(trades) > 0:
+                    trades_df = pd.DataFrame(trades)
+                    win_rate, avg_win_loss_ratio = calculate_win_rate_and_ratio(trades_df)
+                else:
+                    win_rate, avg_win_loss_ratio = 0.5, 1.0  # Default values
+
+                # Calculate position size using risk manager
+                base_position_size = risk_manager.calculate_position_size(
+                    capital=capital,
+                    entry_price=current_price,
+                    volatility=volatility,
+                    win_rate=win_rate,
+                    avg_win_loss_ratio=avg_win_loss_ratio,
                 )
+                position_size_dollars = base_position_size * regime_multiplier
 
-                # Calculate entry fee
-                entry_fee = position_size * entry_price * fee_rate
-                total_fees += entry_fee
-                capital -= entry_fee
+                if position_size_dollars > 0:  # Only enter if risk manager allows
+                    position_size = position_size_dollars / current_price
+                    position = 1
+                    entry_price = current_price
+                    entry_prob = confidence
+                    entry_idx = i
 
-        # Exit signal: prediction = 0 OR we're at the end
-        elif position == 1 and (df_test["prediction"].iloc[i] == 0 or i == len(df_test) - 1):
-            exit_price = current_price
-            position_value = position_size * exit_price
-            exit_fee = position_size * exit_price * fee_rate
-            total_fees += exit_fee
-            position_value -= exit_fee
+                    # Calculate stop-loss and take-profit levels
+                    stop_loss_price, take_profit_price = risk_manager.calculate_stop_levels(
+                        entry_price, "long"
+                    )
 
-            gross_pnl = position_size * (exit_price - entry_price)
-            net_pnl = gross_pnl - (entry_fee + exit_fee)
+                    # Calculate entry fee
+                    entry_fee = position_size * entry_price * fee_rate
+                    total_fees += entry_fee
+                    capital -= entry_fee
 
-            capital += position_value
+        # Exit signals based on regime change
+        elif position == 1:
+            should_exit = False
+            exit_reason = "signal"
 
-            trades.append(
-                {
-                    "entry_idx": entry_idx,
-                    "exit_idx": i,
-                    "entry_price": entry_price,
-                    "exit_price": exit_price,
-                    "gross_pnl": gross_pnl,
-                    "net_pnl": net_pnl,
-                    "fees": entry_fee + exit_fee,
-                    "position_size": position_size,
-                    "entry_prob": entry_prob,
-                    "exit_reason": "signal",
-                }
-            )
+            if regime == 2 and confidence > 0.45:  # Bear
+                should_exit = True
+                exit_reason = "bear_regime"
+            elif i == len(df_test) - 1:  # Last day
+                should_exit = True
+                exit_reason = "end_of_period"
+            elif confidence < 0.40:  # Low confidence
+                should_exit = True
+                exit_reason = "low_confidence"
+
+            if should_exit:
+                exit_price = current_price
+                position_value = position_size * exit_price
+                exit_fee = position_size * exit_price * fee_rate
+                total_fees += exit_fee
+                position_value -= exit_fee
+
+                gross_pnl = position_size * (exit_price - entry_price)
+                net_pnl = gross_pnl - (entry_fee + exit_fee)
+
+                capital += position_value
+
+                trades.append(
+                    {
+                        "entry_idx": entry_idx,
+                        "exit_idx": i,
+                        "entry_price": entry_price,
+                        "exit_price": exit_price,
+                        "gross_pnl": gross_pnl,
+                        "net_pnl": net_pnl,
+                        "fees": entry_fee + exit_fee,
+                        "position_size": position_size,
+                        "entry_prob": entry_prob,
+                        "exit_reason": "signal",
+                    }
+                )
 
             position = 0
 
@@ -655,24 +743,24 @@ def main():
     print("=" * 60)
     print()
 
-    # Initialize exchange
+    # Initialize exchange with rate limiting enabled
     try:
         if exchange_name == "hyperliquid":
-            exchange = ccxt.hyperliquid()
+            exchange = ccxt.hyperliquid({"enableRateLimit": True})
         elif exchange_name == "binance":
-            exchange = ccxt.binance()
+            exchange = ccxt.binance({"enableRateLimit": True})
         elif exchange_name == "coinbase":
-            exchange = ccxt.coinbase()
+            exchange = ccxt.coinbase({"enableRateLimit": True})
         elif exchange_name == "kraken":
-            exchange = ccxt.kraken()
+            exchange = ccxt.kraken({"enableRateLimit": True})
         elif exchange_name == "bybit":
-            exchange = ccxt.bybit()
+            exchange = ccxt.bybit({"enableRateLimit": True})
         elif exchange_name == "okx":
-            exchange = ccxt.okx()
+            exchange = ccxt.okx({"enableRateLimit": True})
         else:
             # Try to load exchange dynamically
             exchange_class = getattr(ccxt, exchange_name)
-            exchange = exchange_class()
+            exchange = exchange_class({"enableRateLimit": True})
     except AttributeError:
         print(f"✗ Error: Exchange '{exchange_name}' not supported by CCXT")
         print("   Available exchanges: binance, coinbase, kraken, bybit, okx, hyperliquid")
@@ -735,8 +823,69 @@ def main():
     df["macro_score"] = 0.6  # Fed paused, inflation sticky
     df["unlock_pressure"] = 0.15  # Post-Nov cliff absorbed
 
-    # Target: 1 if next 7-day return >5%, else 0
-    df["target"] = (df["close"].pct_change(7).shift(-7) > 0.05).astype(int)
+    # ===================================================================
+    # REGIME CLASSIFICATION TARGET (4 classes)
+    # ===================================================================
+    def classify_regime(data):
+        """
+        Classify market regime into 4 categories based on price action.
+
+        Classes:
+        0 = Bull Run: Strong uptrend (>10% weekly gain + upward momentum)
+        1 = Ranging: Sideways movement (±3% weekly, low volatility)
+        2 = Bear Market: Strong downtrend (>5% weekly loss + downward momentum)
+        3 = High Volatility: Large swings regardless of direction
+
+        Args:
+            data: DataFrame with price data
+
+        Returns:
+            Series with regime labels (0-3)
+        """
+        regimes = pd.Series(index=data.index, dtype=int)
+
+        # Calculate indicators for regime classification
+        weekly_return = data["close"].pct_change(7).shift(-7)  # Forward 7-day return
+        volatility = data["close"].pct_change().rolling(14).std().shift(-7)  # Forward volatility
+        momentum_3d = data["close"].pct_change(3).shift(-7)  # 3-day momentum
+
+        # High Volatility Regime (priority - check first)
+        high_vol_condition = volatility > volatility.quantile(0.75)  # Top 25% volatility
+        large_moves = abs(weekly_return) > 0.15  # Absolute move > 15%
+        regimes.loc[high_vol_condition & large_moves] = 3
+
+        # Bull Run Regime
+        bull_condition = (
+            (weekly_return > 0.10)  # >10% weekly gain
+            & (momentum_3d > 0.03)  # Positive 3-day momentum
+            & (regimes != 3)  # Not already classified as high vol
+        )
+        regimes.loc[bull_condition] = 0
+
+        # Bear Market Regime
+        bear_condition = (
+            (weekly_return < -0.05)  # >5% weekly loss
+            & (momentum_3d < -0.02)  # Negative 3-day momentum
+            & (regimes != 3)  # Not already classified as high vol
+        )
+        regimes.loc[bear_condition] = 2
+
+        # Ranging Regime (everything else)
+        ranging_condition = (
+            (abs(weekly_return) <= 0.03)  # ±3% movement
+            & (volatility <= volatility.quantile(0.50))  # Below median volatility
+            & (regimes != 3)  # Not already classified
+        )
+        regimes.loc[ranging_condition] = 1
+
+        # Default to ranging for any unclassified
+        regimes.fillna(1, inplace=True)
+        regimes = regimes.astype(int)
+
+        return regimes
+
+    # Target: Regime classification (0=Bull, 1=Ranging, 2=Bear, 3=HighVol)
+    df["target"] = classify_regime(df)
 
     # Drop NaNAs
     df = df.dropna()
@@ -904,7 +1053,7 @@ def main():
         print(f"{row['feature']}: {row['importance']:.4f}")
     print("=" * 50)
 
-    # Current real-time prediction - use latest values from data
+    # Current real-time regime prediction - use latest values from data
     current = pd.DataFrame(
         [
             {
@@ -924,8 +1073,34 @@ def main():
         ]
     )
 
-    prob_up = model.predict_proba(current)[0][1]
-    print(f"\nProbability of >5% move up in next 1-4 weeks: {prob_up:.1%}\n")
+    # Get regime prediction and probabilities
+    regime_pred = model.predict(current)[0]
+    regime_probs = model.predict_proba(current)[0]
+
+    regime_names = ["Bull Run", "Ranging Market", "Bear Market", "High Volatility"]
+    print(f"\n🔮 PREDICTED MARKET REGIME: {regime_names[regime_pred]}")
+    print("=" * 50)
+    print("Regime Probabilities:")
+    # Only show probabilities for classes that exist in the model
+    for i in range(len(regime_probs)):
+        marker = "👉" if i == regime_pred else "  "
+        print(f"{marker} {regime_names[i]}: {regime_probs[i]:.1%}")
+    # Show "Not detected" for missing classes
+    for i in range(len(regime_probs), 4):
+        print(f"   {regime_names[i]}: Not detected (insufficient data)")
+    print("=" * 50)
+    print()
+
+    # Trading recommendation based on regime
+    if regime_pred == 0:  # Bull
+        print("💡 Recommendation: LONG positions with larger size")
+    elif regime_pred == 1:  # Ranging
+        print("💡 Recommendation: Small positions, mean reversion strategy")
+    elif regime_pred == 2:  # Bear
+        print("💡 Recommendation: Stay in CASH or consider SHORT")
+    elif regime_pred == 3:  # High Vol
+        print("💡 Recommendation: Small positions with wider stop-losses")
+    print()
 
 
 if __name__ == "__main__":
