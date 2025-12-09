@@ -6,6 +6,7 @@ import ccxt
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
 from xgboost import XGBClassifier
 
 from risk_management import RiskManager, calculate_volatility, calculate_win_rate_and_ratio
@@ -179,6 +180,7 @@ def walk_forward_backtest(
     model = None
     last_train_idx = 0
     num_retrains = 0
+    label_encoder = None  # Will map arbitrary regime labels to 0, 1, 2, ...
 
     # Walk through the dataframe
     for i in range(train_window, len(df)):
@@ -191,24 +193,67 @@ def walk_forward_backtest(
             X_train = df.loc[train_start : train_end - 1, feature_columns]
             y_train = df.loc[train_start : train_end - 1, "target"]
 
+            # Skip training if we have too few samples
+            if len(y_train) < 30:
+                continue
+
+            # Use LabelEncoder to ensure classes are consecutive starting from 0
+            label_encoder = LabelEncoder()
+            y_train_encoded = label_encoder.fit_transform(y_train)
+            n_classes = len(label_encoder.classes_)
+
+            # Skip if only one class
+            if n_classes < 2:
+                continue
+
             # Train new model with optimized hyperparameters
             hyperparams = load_hyperparameters(symbol)
-            hyperparams["random_state"] = 42  # Always use fixed seed for reproducibility
-            # Multi-class classification setup (4 regimes)
-            hyperparams["objective"] = "multi:softmax"
-            hyperparams["num_class"] = 4
-            model = XGBClassifier(**hyperparams)
-            model.fit(X_train, y_train)
-            last_train_idx = i
-            num_retrains += 1
+            hyperparams["random_state"] = 42
+
+            # Multi-class classification setup
+            hyperparams["objective"] = "multi:softprob"
+            hyperparams["num_class"] = n_classes  # Use actual number of classes present
+
+            try:
+                model = XGBClassifier(**hyperparams)
+                model.fit(X_train, y_train_encoded)
+                last_train_idx = i
+                num_retrains += 1
+            except ValueError as e:
+                print(f"Warning: Skipping retrain at index {i}: {e}")
+                continue
 
         # Get current prediction and probabilities
-        X_current = df.loc[i:i, feature_columns]
-        regime_prediction = model.predict(X_current)[0]  # 0=Bull, 1=Ranging, 2=Bear, 3=HighVol
-        regime_probs = model.predict_proba(X_current)[0]  # Probabilities for all 4 classes
+        if model is not None and label_encoder is not None:
+            X_current = df.loc[i:i, feature_columns]
+            predictions = model.predict(X_current)
+            probs = model.predict_proba(X_current)
 
-        # Get confidence for the predicted regime
-        regime_confidence = regime_probs[regime_prediction]
+            # Extract scalar values - handle different array shapes
+            if isinstance(predictions, np.ndarray):
+                if predictions.ndim > 1:
+                    regime_prediction_encoded = int(predictions[0, 0])
+                else:
+                    regime_prediction_encoded = int(predictions[0])
+            else:
+                regime_prediction_encoded = int(predictions)
+
+            regime_probs_encoded = probs[0]
+
+            # Decode the prediction back to original regime label
+            regime_prediction = int(label_encoder.inverse_transform([regime_prediction_encoded])[0])
+
+            # Create a full probability array for all 4 regimes
+            # (0=Bull, 1=Ranging, 2=Bear, 3=HighVol)
+            regime_probs = np.zeros(4)
+            for enc_idx, orig_label in enumerate(label_encoder.classes_):
+                regime_probs[int(orig_label)] = regime_probs_encoded[enc_idx]
+
+            # Get confidence for the predicted regime
+            regime_confidence = regime_probs[regime_prediction]
+        else:
+            # No model available yet, skip this iteration
+            continue
 
         current_price = df.loc[i, "close"]
 
@@ -704,6 +749,31 @@ def backtest_strategy(
     }
 
 
+def get_dynamic_data_limit(symbol, user_limit=None):
+    """
+    Get dynamic historical data limit based on asset class.
+
+    Args:
+        symbol: Trading pair symbol (e.g., 'BTC/USDT')
+        user_limit: Optional user-specified limit to override defaults
+
+    Returns:
+        Number of days to fetch
+    """
+    if user_limit:
+        return user_limit
+
+    # Major caps (BTC, ETH) - use more historical data (2+ years)
+    if any(x in symbol.upper() for x in ["BTC", "ETH"]):
+        return 730  # ~2 years
+    # Mid-caps (SOL, BNB, ADA, etc.) - moderate history (1 year)
+    elif any(x in symbol.upper() for x in ["SOL", "BNB", "ADA", "AVAX", "DOT", "MATIC", "LINK"]):
+        return 365  # ~1 year
+    # Low-caps and newer tokens - shorter history (6 months)
+    else:
+        return 180  # ~6 months
+
+
 def main():
     """Main application entry point."""
     # Parse command-line arguments
@@ -725,21 +795,24 @@ def main():
     parser.add_argument(
         "--limit",
         type=int,
-        default=200,
-        help="Number of days of historical data to fetch (default: 200)",
+        default=None,
+        help="Number of days of historical data to fetch (default: auto-detected based on symbol)",
     )
 
     args = parser.parse_args()
 
     symbol = args.symbol
     exchange_name = args.exchange.lower()
-    limit = args.limit
+    limit = get_dynamic_data_limit(symbol, args.limit)
+
+    # Determine data limit category for display
+    limit_source = "user-specified" if args.limit else "auto-detected"
 
     print("\n" + "=" * 60)
     print(f"CRYPTO PRICE PREDICTOR - {symbol}")
     print("=" * 60)
     print(f"Exchange: {exchange_name}")
-    print(f"Historical Data: {limit} days")
+    print(f"Historical Data: {limit} days ({limit_source})")
     print("=" * 60)
     print()
 
@@ -914,6 +987,10 @@ def main():
     # Load optimized hyperparameters from tune.py results
     hyperparams = load_hyperparameters(symbol)
     hyperparams["random_state"] = 42  # Always use fixed seed for reproducibility
+
+    # Multi-class classification setup (4 regimes)
+    hyperparams["objective"] = "multi:softprob"
+    hyperparams["num_class"] = 4
 
     print("\nUsing hyperparameters:")
     for key, value in hyperparams.items():
