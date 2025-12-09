@@ -6,10 +6,9 @@ Orchestrates data fetching, model training, and backtesting.
 import argparse
 
 import config
-from backtest.engine import backtest_strategy, walk_forward_backtest
+from backtest.engine import walk_forward_backtest
 from data.fetcher import fetch_btc_data, fetch_funding_rate, fetch_ohlcv
 from data.processor import create_features, create_triple_barrier_labels
-from risk_management import RiskManager
 from strategies.xgb_strategy import get_feature_importance, train_model
 
 
@@ -46,38 +45,68 @@ def main():
     # Train model
     print("Training model...")
     split_idx = int(len(df) * (1 - config.TEST_SIZE))
-    train_df, test_df = df.iloc[:split_idx].copy(), df.iloc[split_idx:].copy()
+    train_df = df.iloc[:split_idx].copy()
     model, label_encoder = train_model(
         train_df[config.FEATURE_COLUMNS], train_df["target"], args.symbol
     )
     print(f"✓ Model trained\n")
 
-    # Backtests
-    risk_mgr = RiskManager()
-    print("Running backtests...\n")
-
-    standard_results = backtest_strategy(
-        test_df, model, label_encoder, config.FEATURE_COLUMNS, risk_manager=risk_mgr
-    )
+    # Run walk-forward backtest
+    print("Running walk-forward backtest...\n")
     wf_results = walk_forward_backtest(df, config.FEATURE_COLUMNS, args.symbol)
 
     # Print results
-    print_results("STANDARD BACKTEST", standard_results)
-    print_results("WALK-FORWARD BACKTEST", wf_results)
-    print_comparison(standard_results, wf_results)
+    strategy_name = "XGBoost + Triple Barrier"
+    print_analysis_header(args.symbol, args.exchange, len(df), strategy_name)
+    print_performance_metrics(wf_results)
+    print_trading_statistics(wf_results)
     print_feature_importance(model, config.FEATURE_COLUMNS)
 
 
-def print_results(title, results):
-    print(f"\n{'=' * 50}\n{title}\n{'=' * 50}")
-    print(f"Return: {results['total_return_pct']:.2f}% | P&L: ${results['total_pnl']:.2f}")
-    print(f"Trades: {results['num_trades']} | Win Rate: {results['win_rate_pct']:.1f}%")
-    print(f"Sharpe: {results['sharpe_ratio']:.2f} | Max DD: {results['max_drawdown_pct']:.2f}%")
+def print_analysis_header(symbol, exchange, days, strategy):
+    """Print header with analysis configuration."""
+    print(f"\n{'=' * 60}")
+    print(f"CRYPTOCURRENCY PREDICTION ANALYSIS")
+    print(f"{'=' * 60}")
+    print(f"Symbol:           {symbol}")
+    print(f"Exchange:         {exchange}")
+    print(f"Analysis Period:  {days} days")
+    print(f"Strategy:         {strategy}")
+    print(f"{'=' * 60}\n")
 
 
-def print_comparison(std, wf):
-    print(f"\n{'=' * 50}\nCOMPARISON\n{'=' * 50}")
-    print(f"Return Diff: {wf['total_return_pct'] - std['total_return_pct']:+.2f}%")
+def print_performance_metrics(results):
+    """Print portfolio performance metrics."""
+    initial_capital = config.DEFAULT_INITIAL_CAPITAL
+    final_equity = results["final_equity"]
+    roi_pct = results["total_return_pct"]
+
+    print(f"{'=' * 60}")
+    print(f"PERFORMANCE METRICS")
+    print(f"{'=' * 60}")
+    print(f"Initial Capital:  ${initial_capital:,.2f}")
+    print(f"Final Equity:     ${final_equity:,.2f}")
+    print(f"Total P&L:        ${results['total_pnl']:,.2f}")
+    print(f"ROI:              {roi_pct:+.2f}%")
+    print(f"Sharpe Ratio:     {results['sharpe_ratio']:.2f}")
+    print(f"Max Drawdown:     {results['max_drawdown_pct']:.2f}%")
+    print(f"Total Fees:       ${results['total_fees']:,.2f}")
+    print(f"{'=' * 60}\n")
+
+
+def print_trading_statistics(results):
+    """Print trading activity statistics."""
+    print(f"{'=' * 60}")
+    print(f"TRADING STATISTICS")
+    print(f"{'=' * 60}")
+    print(f"Total Trades:     {results['num_trades']}")
+    print(f"Winning Trades:   {results['winning_trades']}")
+    print(f"Losing Trades:    {results['losing_trades']}")
+    print(f"Win Rate:         {results['win_rate_pct']:.1f}%")
+    print(f"Avg Win:          ${results['avg_win']:.2f}")
+    print(f"Avg Loss:         ${results['avg_loss']:.2f}")
+    print(f"Profit Factor:    {results['profit_factor']:.2f}")
+    print(f"{'=' * 60}\n")
 
 
 def print_feature_importance(model, features):

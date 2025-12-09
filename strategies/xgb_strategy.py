@@ -13,13 +13,14 @@ from xgboost import XGBClassifier
 import config
 
 
-def load_hyperparameters(symbol: str):
+def load_hyperparameters(symbol: str, verbose: bool = True):
     """
     Load hyperparameters from symbol-specific JSON file.
     Falls back to smart defaults based on asset class.
 
     Args:
         symbol: Trading pair (e.g., 'BTC/USDT')
+        verbose: Whether to print loading messages
 
     Returns:
         Dictionary of hyperparameters
@@ -31,7 +32,8 @@ def load_hyperparameters(symbol: str):
     if os.path.exists(symbol_filepath):
         with open(symbol_filepath, "r") as f:
             params = json.load(f)
-        print(f"✓ Loaded {symbol} hyperparameters from {symbol_filepath}")
+        if verbose:
+            print(f"✓ Loaded {symbol} hyperparameters from {symbol_filepath}")
         return params
 
     # Fall back to generic file
@@ -39,24 +41,34 @@ def load_hyperparameters(symbol: str):
     if os.path.exists(generic_filepath):
         with open(generic_filepath, "r") as f:
             params = json.load(f)
-        print(f"⚠ Using generic hyperparameters from {generic_filepath}")
-        print(f"  (Run 'tune.py --symbol {symbol} --save' for optimized parameters)")
+        if verbose:
+            print(f"⚠ Using generic hyperparameters from {generic_filepath}")
+            print(f"  (Run 'tune.py --symbol {symbol} --save' for optimized parameters)")
         return params
 
     # Use smart defaults
-    print(f"⚠ No hyperparameter files found, using smart defaults for {symbol}")
-    print(f"  (Run 'tune.py --symbol {symbol} --trials 100 --save' to optimize)")
+    if verbose:
+        print(f"⚠ No hyperparameter files found, using smart defaults for {symbol}")
+        print(f"  (Run 'tune.py --symbol {symbol} --trials 100 --save' to optimize)")
     return config.get_default_hyperparameters(symbol)
 
 
-def train_model(X_train: pd.DataFrame, y_train: pd.Series, symbol: str):
+def train_model(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    symbol: str,
+    hyperparams: dict = None,
+    verbose: bool = True,
+):
     """
     Train XGBoost classifier.
 
     Args:
         X_train: Training features
         y_train: Training labels
-        symbol: Trading pair (for hyperparameter loading)
+        symbol: Trading pair (for hyperparameter loading if not provided)
+        hyperparams: Pre-loaded hyperparameters (optional, to avoid repeated loading)
+        verbose: Whether to print loading messages
 
     Returns:
         Tuple of (model, label_encoder) or (None, None) if training failed
@@ -74,8 +86,12 @@ def train_model(X_train: pd.DataFrame, y_train: pd.Series, symbol: str):
     if n_classes < 2:
         return None, None
 
-    # Load hyperparameters
-    hyperparams = load_hyperparameters(symbol)
+    # Load hyperparameters if not provided
+    if hyperparams is None:
+        hyperparams = load_hyperparameters(symbol, verbose=verbose)
+    else:
+        hyperparams = hyperparams.copy()  # Don't modify original dict
+
     hyperparams["random_state"] = config.RANDOM_STATE
 
     # Classification setup

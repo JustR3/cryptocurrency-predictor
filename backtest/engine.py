@@ -357,7 +357,7 @@ def walk_forward_backtest(
     Returns:
         Dictionary with backtest results
     """
-    from strategies.xgb_strategy import train_model
+    from strategies.xgb_strategy import load_hyperparameters, train_model
 
     if risk_manager is None:
         risk_manager = RiskManager()
@@ -379,6 +379,9 @@ def walk_forward_backtest(
 
     volatility = calculate_volatility(df["close"])
 
+    # Load hyperparameters once at the start
+    hyperparams = load_hyperparameters(symbol, verbose=True)
+
     model = None
     label_encoder = None
     last_train_idx = 0
@@ -393,7 +396,9 @@ def walk_forward_backtest(
             X_train = df.loc[train_start : train_end - 1, feature_columns]
             y_train = df.loc[train_start : train_end - 1, "target"]
 
-            model, label_encoder = train_model(X_train, y_train, symbol)
+            model, label_encoder = train_model(
+                X_train, y_train, symbol, hyperparams=hyperparams, verbose=False
+            )
 
             if model is not None:
                 last_train_idx = i
@@ -407,6 +412,10 @@ def walk_forward_backtest(
         predictions_encoded = model.predict(X_current)
         probs_encoded = model.predict_proba(X_current)
 
+        # Ensure predictions_encoded is 1D
+        if predictions_encoded.ndim > 1:
+            predictions_encoded = predictions_encoded.flatten()
+        
         prediction = label_encoder.inverse_transform(predictions_encoded)[0]
         confidence = probs_encoded[0][predictions_encoded[0]]
 
@@ -418,9 +427,9 @@ def walk_forward_backtest(
                 current_price, entry_price, "long"
             )
 
-            if prediction == -1 or confidence < 0.35:
+            if prediction == 0 or confidence < 0.35:
                 should_exit = True
-                exit_reason = "signal" if prediction == -1 else "low_confidence"
+                exit_reason = "signal" if prediction == 0 else "low_confidence"
 
             if should_exit:
                 exit_price = apply_slippage_and_fees(current_price, "sell")
@@ -452,7 +461,7 @@ def walk_forward_backtest(
 
         # Entry signals
         if position == 0:
-            should_enter = prediction == 1 and confidence > 0.55
+            should_enter = prediction == 2 and confidence > 0.55
 
             if should_enter:
                 position_size_dollars = calculate_position_size_volatility_targeting(
