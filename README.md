@@ -1,481 +1,245 @@
 # Cryptocurrency Price Predictor
 
-A machine learning-based trading strategy for predicting cryptocurrency market regimes and generating adaptive trading signals across multiple exchanges.
+A machine learning-based trading strategy using XGBoost to predict cryptocurrency market movements with sophisticated risk management and realistic backtesting.
 
 ## Overview
 
-This project uses XGBoost machine learning to classify cryptocurrency market conditions into **4 distinct regimes** (Bull Run, Ranging, Bear Market, High Volatility) using a 7-day forward-looking window. The model combines 12 technical indicators (RSI, MACD, EMA, Bollinger Bands, volume analysis), risk management, and macro-sentiment inputs to generate adaptive trading signals with comprehensive backtesting.
+This project uses XGBoost machine learning with the **Triple Barrier Method** for labeling to generate trading signals. The system combines technical indicators, BTC correlation, funding rates, and volatility targeting for adaptive position sizing across multiple exchanges.
 
-### Market Regime Classification
+## 🎯 Key Features
 
-Instead of simple binary predictions, the model classifies market conditions into 4 regimes:
+### 1. **Triple Barrier Method Labeling**
+Instead of rigid binary thresholds, labels are created by observing which barrier is hit first:
+- **Upper Barrier** (10% profit): Label = 1 (Long win)
+- **Lower Barrier** (5% loss): Label = -1 (Long loss)  
+- **Time Barrier** (7 days): Label = sign of return (Neutral/timeout)
 
-- **Bull Run** (Class 0): Strong uptrend (>10% weekly gain + positive momentum)
-  - Strategy: Long positions with larger size (1.2x multiplier)
-- **Ranging Market** (Class 1): Sideways movement (±3% weekly, low volatility)
-  - Strategy: Small positions (0.7x multiplier), mean reversion
-- **Bear Market** (Class 2): Strong downtrend (>5% weekly loss + negative momentum)
-  - Strategy: Stay in cash or consider shorts
-- **High Volatility** (Class 3): Large swings regardless of direction (>15% weekly move)
-  - Strategy: Very small positions (0.5x multiplier) with wider stops
+This captures realistic trade outcomes and is superior to arbitrary threshold classification.
 
-This regime-based approach allows the strategy to adapt position sizing and entry/exit logic based on market conditions rather than making simplistic binary predictions.
+### 2. **Advanced Features**
+- **Technical Indicators**: RSI, MACD, Bollinger Bands, ATR, EMAs
+- **BTC Beta**: Rolling correlation with BTC (market exposure)
+- **Funding Rates**: Perpetual futures funding rates (sentiment indicator)
+- **Volume Analysis**: Volume change, volume/SMA ratio
+- **Price Momentum**: Multi-timeframe momentum (3d, 5d, 7d)
+- ❌ **Removed**: Manual macro scores (was static noise)
 
-## Features
+### 3. **Volatility Targeting**
+Position sizing scales inversely with volatility to maintain constant risk:
+- High volatility → Smaller positions
+- Low volatility → Larger positions
+- Target: 15% annualized portfolio volatility
 
-- **Market Regime Classification**: 4-class prediction (Bull/Ranging/Bear/HighVol) instead of binary signals
-- **Adaptive Position Sizing**: Position size multipliers based on predicted regime (0.5x-1.2x)
-- **CCXT Rate Limiting**: Built-in API throttling to prevent exchange bans
-- **Multi-Symbol/Exchange Support**: Trade any cryptocurrency pair on 100+ exchanges (Binance, Coinbase, Kraken, Hyperliquid, etc.)
-- **Symbol-Specific Hyperparameters**: Optimized parameters for each trading pair with smart defaults by asset class
-- **12 Technical Indicators**: 
-  - RSI (Relative Strength Index)
-  - MACD (Moving Average Convergence Divergence)
-  - EMA (9, 21, 50-period Exponential Moving Averages)
-  - Bollinger Bands
-  - Volume analysis (change, SMA ratio)
-  - Price momentum indicators
-- **Advanced Risk Management**:
-  - Kelly Criterion position sizing
-  - Regime-based position size adjustments
-  - Stop-loss and take-profit automation
-  - Maximum drawdown limits
-  - Capital preservation during adverse conditions
-- **Dual Backtesting Modes**:
-  - Standard: Train once on historical data
-  - Walk-Forward: Periodic retraining every 20 days (more realistic)
-- **Comprehensive Metrics**: P&L, win rate, profit factor, Sharpe ratio, max drawdown
-- **Hyperparameter Optimization**: Bayesian optimization via Optuna with multi-class support
-- **Real-time Regime Predictions**: Live market regime classification with confidence scores
+### 4. **Realistic Cost Modeling**
+- **Trading Fees**: 5 basis points (0.05%)
+- **Slippage**: 10 basis points (0.1%)
+- Combined impact on entry/exit prices
 
-## Installation
+### 5. **Sharpe Ratio Optimization**
+Hyperparameter tuning optimizes for **Sharpe Ratio** instead of accuracy, ensuring profitability matters more than prediction correctness.
+
+### 6. **Multi-Exchange Support**
+Works with 100+ exchanges via CCXT:
+- Binance, Coinbase, Kraken, Bybit, OKX, Hyperliquid, etc.
+- Symbol-specific hyperparameters with smart defaults
+
+## 🚀 Installation
 
 ### Prerequisites
 - Python 3.10+
-- [UV](https://astral.sh/blog/uv/) package manager
+- [UV](https://astral.sh/uv/) package manager (recommended) or pip
 - macOS: `libomp` for XGBoost support
 
 ### Setup
 
-1. Clone the repository:
 ```bash
-git clone https://github.com/justra/hyperliquid-predictor.git
+# Clone repository
+git clone https://github.com/JustR3/hyperliquid-predictor.git
 cd hyperliquid-predictor
-```
 
-2. Create and activate virtual environment:
-```bash
+# Create virtual environment
 uv venv
-source .venv/bin/activate
-```
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
-3. Install dependencies:
-```bash
+# Install dependencies
 uv pip install -e .
-```
 
-4. (macOS only) Install OpenMP runtime:
-```bash
+# macOS only: Install OpenMP runtime
 brew install libomp
 ```
 
-## Usage
+## 📖 Usage
 
-### Quick Start - Run with Defaults (HYPE/USDT on Hyperliquid)
+### Quick Start
 ```bash
+# Run with defaults (HYPE/USDT on Hyperliquid)
 uv run main.py
 ```
 
-### Running with Different Cryptocurrencies
-
+### Different Cryptocurrencies
 ```bash
 # Bitcoin on Binance
 uv run main.py --symbol BTC/USDT --exchange binance
 
-# Ethereum on Coinbase
+# Ethereum on Coinbase  
 uv run main.py --symbol ETH/USDT --exchange coinbase
 
 # Solana on Bybit
 uv run main.py --symbol SOL/USDT --exchange bybit
-
-# Custom data limit (days of history)
-uv run main.py --symbol BTC/USDT --exchange binance --limit 300
 ```
 
-**Available exchanges**: binance, coinbase, kraken, bybit, okx, hyperliquid, and 100+ others via CCXT
-
-### Hyperparameter Optimization
-
-To optimize model parameters for a specific cryptocurrency:
-
+### Hyperparameter Tuning (Optimizes for Sharpe Ratio)
 ```bash
-# Quick tuning for BTC (20 trials, ~2 minutes)
-uv run tune.py --symbol BTC/USDT --exchange binance --trials 20 --save
+# Optimize for specific symbol
+uv run tune.py --symbol BTC/USDT --trials 100 --save
 
-# Standard tuning for ETH (100 trials, ~10 minutes)
-uv run tune.py --symbol ETH/USDT --exchange binance --trials 100 --save
-
-# Comprehensive tuning for HYPE (400 trials, custom CV folds)
-uv run tune.py --symbol HYPE/USDT --exchange hyperliquid --trials 400 --folds 5 --save
+# Use optimized parameters
+uv run main.py --symbol BTC/USDT
 ```
 
-**How tuning works:**
-- Uses Tree-structured Parzen Estimator (TPE) - a Bayesian optimization algorithm
-- Saves results to `best_hyperparameters_{SYMBOL}.json` (e.g., `best_hyperparameters_BTC_USDT.json`)
-- Parameters are automatically loaded when running `main.py` with the same symbol
-- Optimizes: n_estimators, max_depth, learning_rate, subsample, colsample_bytree, min_child_weight, gamma
-
-**Hyperparameter strategy:**
-- One config per symbol (not per exchange) since price behavior is asset-specific
-- BTC/USDT on Binance and Kraken will use the same `best_hyperparameters_BTC_USDT.json`
-- Falls back to generic `best_hyperparameters.json` if symbol-specific config doesn't exist
-- Smart defaults based on asset volatility if no config files exist:
-  - **Major caps** (BTC, ETH): Conservative parameters (shallow trees, low learning rate)
-  - **Mid caps** (SOL, BNB, ADA): Medium parameters
-  - **Low caps**: Aggressive parameters (deep trees, higher learning rate)
-
-### Running the Main Predictor
-
-```bash
-uv run main.py --symbol BTC/USDT --exchange binance
-```
-
-This will:
-1. Fetch 200 days of price data from the specified exchange
-2. Calculate 12 technical indicators
-3. Load optimized hyperparameters (symbol-specific > generic > smart defaults)
-4. Train XGBoost model on 80% of historical data
-5. Run two backtests:
-   - **Standard**: Train once on historical data
-   - **Walk-Forward**: Retrain every 20 days (more realistic)
-6. Display comprehensive performance metrics
-7. Generate live prediction probability
-
-### Workflow for a New Cryptocurrency
-
-1. **Tune hyperparameters** (optional but recommended):
-```bash
-uv run tune.py --symbol SOL/USDT --exchange binance --trials 100 --save
-```
-
-2. **Run the predictor**:
-```bash
-uv run main.py --symbol SOL/USDT --exchange binance
-```
-
-3. **Iterate**: Adjust risk parameters in `main.py` if needed:
-   - `max_drawdown_pct`: Maximum allowed drawdown (default: 15%)
-   - `max_position_size_pct`: Max position size (default: 20%)
-   - `stop_loss_pct`: Stop-loss trigger (default: 3%)
-   - `take_profit_pct`: Take-profit trigger (default: 8%)
-   - `kelly_fraction`: Kelly criterion fraction (default: 30%)
-2. Update the model creation in `main.py` with the optimized values
-3. Re-run `main.py` with the new parameters
-
-### Typical Workflow
-
-```bash
-# 1. Initial exploration
-uv run main.py  # See current performance
-
-# 2. Optimize model
-uv run tune.py --trials 50 --save
-
-# 3. Update main.py with best_hyperparameters.json values
-
-# 4. Evaluate improved model
-uv run main.py  # See improved backtest results
-```
-
-## Output Example
-
-```
-============================================================
-CRYPTO PRICE PREDICTOR - BTC/USDT
-============================================================
-Exchange: binance
-Historical Data: 200 days
-============================================================
-
-Fetching BTC/USDT data from binance...
-✓ Fetched 200 days of data
-
-✓ Loaded BTC/USDT hyperparameters from best_hyperparameters_BTC_USDT.json
-
-==================================================
-STANDARD BACKTEST (Train Once)
-==================================================
-Initial Capital: $10,000
-Final Equity: $10,623.48
-Total Return: 6.23%
-Total P&L (net): $623.48
-Total Fees Paid: $0.62
-
-Number of Trades: 5
-Winning Trades: 3
-Losing Trades: 2
-Win Rate: 60.0%
-
-Avg Win: $241.56
-Avg Loss: $-69.17
-Profit Factor: 2.52x
-
-Sharpe Ratio: 4.12
-Max Drawdown: -1.23%
-==================================================
-
-==================================================
-WALK-FORWARD BACKTEST (Retrain Every 20 Days)
-==================================================
-Initial Capital: $10,000
-Final Equity: $10,723.19
-Total Return: 7.23%
-Total P&L (net): $723.19
-Total Fees Paid: $0.72
-Model Retrains: 5
-
-Number of Trades: 6
-Winning Trades: 4
-Losing Trades: 2
-Win Rate: 66.7%
-
-Avg Win: $210.30
-Avg Loss: $-65.40
-Profit Factor: 2.64x
-
-Sharpe Ratio: 4.89
-Max Drawdown: -0.89%
-==================================================
-
-🔮 PREDICTED MARKET REGIME: Ranging Market
-==================================================
-Regime Probabilities:
-   Bull Run: 4.8%
-👉 Ranging Market: 51.9%
-   Bear Market: 43.3%
-   High Volatility: Not detected (insufficient data)
-==================================================
-
-💡 Recommendation: Small positions, mean reversion strategy
-```
-
-## Model Architecture
-
-### Features (12 Total)
-**Technical Indicators:**
-- **RSI (14-period)**: Relative Strength Index for momentum
-- **MACD**: Moving Average Convergence Divergence (line, signal, histogram)
-- **Bollinger Bands**: Band position (where price sits within bands)
-- **EMA Crossovers**: Price position relative to 9, 21, 50-period EMAs
-
-**Volume Analysis:**
-- **Volume Change**: Percentage change in trading volume
-- **Volume/SMA Ratio**: Current volume vs 20-day average
-
-**Momentum:**
-- **5-Day Price Momentum**: Recent price change velocity
-
-**Manual Inputs:**
-- **Macro Score**: Market sentiment score (0-1 scale)
-- **Unlock Pressure**: Token unlock/dilution pressure estimate
-
-### Target Classification (4 Regimes)
-
-The model predicts market regime based on 7-day forward price action:
-
-**Class 0 - Bull Run**:
-- Criteria: >10% weekly gain + positive 3-day momentum
-- Classification logic: Strong uptrend with sustained momentum
-- Trading approach: Long positions with 1.2x position size multiplier
-
-**Class 1 - Ranging Market**:
-- Criteria: ±3% weekly movement + below-median volatility
-- Classification logic: Sideways consolidation with low volatility
-- Trading approach: Small positions (0.7x multiplier), mean reversion strategy
-
-**Class 2 - Bear Market**:
-- Criteria: >5% weekly loss + negative 3-day momentum  
-- Classification logic: Strong downtrend with negative momentum
-- Trading approach: Stay in cash or consider shorts
-
-**Class 3 - High Volatility**:
-- Criteria: >15% absolute weekly move + top-25% volatility
-- Classification logic: Large swings regardless of direction
-- Trading approach: Very small positions (0.5x multiplier) with wider stops
-
-### Regime-Based Trading Logic
-
-**Entry Conditions (by regime)**:
-- Bull: Enter if confidence >50%
-- Ranging: Enter if confidence >55% (more selective)
-- Bear: No entry (stay cash)
-- High Vol: Enter if confidence >60% (very selective)
-
-**Exit Conditions**:
-- Switch to Bear regime (confidence >45%)
-- Low confidence in any regime (<40%)
-- Stop-loss or take-profit hit
-- End of backtest period
-
-### Risk Management
-- **Kelly Criterion**: Optimal position sizing based on win rate and profit/loss ratio
-- **Regime Multipliers**: Dynamic position sizing (0.5x-1.2x) based on regime
-- **Stop-Loss/Take-Profit**: Automatic exit at 3% loss or 8% gain
-- **Drawdown Protection**: Trading halts if drawdown exceeds 15%
-- **Position Limits**: Maximum 20% of capital per trade (before regime adjustment)
-
-## Backtest Explanation
-
-The system runs **two backtests** to evaluate strategy performance:
-
-### Standard Backtest (Train Once)
-1. **Training (80%)**: Model learns patterns from 80% of historical data
-2. **Testing (20%)**: Model makes predictions on unseen 20% of data
-3. **Trade Simulation**: 
-   - **Entry**: When model predicts 1 (expects >5% move up)
-   - **Position Size**: Calculated via Kelly Criterion (capped at 20%)
-   - **Fees**: 5 basis points on entry and exit
-   - **Exit**: Stop-loss (3%), take-profit (8%), or model predicts 0
-
-### Walk-Forward Backtest (More Realistic)
-- Retrains model every 20 days with sliding 80-day window
-- Simulates real-world periodic retraining
-- Prevents look-ahead bias
-- Results typically more conservative than standard backtest
-
-**Metrics calculated:**
-- **Total Return %**: Final equity vs initial capital
-- **Total P&L (net)**: Profit/loss after fees (= Final Equity - Initial Capital)
-- **Total Fees Paid**: Trading fees deducted
-- **Win Rate**: % of profitable trades
-- **Profit Factor**: Winning trade $ / Losing trade $ (>1 = profitable)
-- **Sharpe Ratio**: Risk-adjusted returns (>1 is good, >2 is excellent)
-- **Max Drawdown %**: Largest peak-to-trough decline
-
-**Important notes:**
-- Uses chronological split (not random) - tests on future data
-- Includes realistic trading fees
-- Walk-forward results are more trustworthy (less overfitting)
-- Results show historical performance only - not guaranteed future results
-
-## Key Metrics
-
-| Metric | Description | Good Value |
-|--------|-------------|------------|
-| **Total Return %** | Overall profit/loss as percentage of initial capital | >10% annually |
-| **Total P&L (net)** | Actual dollar profit/loss after all fees | Positive |
-| **Win Rate** | % of closed trades that were profitable | >50% |
-| **Profit Factor** | Ratio of winning trades to losing trades | >1.5x |
-| **Sharpe Ratio** | Risk-adjusted return | >2.0 |
-| **Max Drawdown %** | Largest peak-to-trough decline | <20% |
-
-## Project Structure
+## 📁 Project Structure
 
 ```
 hyperliquid-predictor/
-├── main.py                      # Main application (930 lines)
-├── tune.py                      # Hyperparameter tuning CLI (191 lines)
-├── hyperparameter_tuning.py     # Optuna optimization module (98 lines)
-├── risk_management.py           # Risk management module (251 lines)
-├── best_hyperparameters.json    # Generic optimized parameters
-├── best_hyperparameters_*.json  # Symbol-specific optimized parameters
-├── pyproject.toml               # Project dependencies (UV)
-├── uv.lock                      # Locked dependency versions
-├── README.md                    # This file
-└── .gitignore                   # Git ignore rules
+├── config.py              # Centralized configuration
+├── data/
+│   ├── fetcher.py        # CCXT data fetching
+│   ├── processor.py      # Feature engineering + Triple Barrier labels
+│   └── storage.py        # Parquet caching
+├── strategies/
+│   └── xgb_strategy.py   # XGBoost model training/prediction
+├── backtest/
+│   └── engine.py         # Volatility targeting + cost modeling
+├── risk_management.py    # Position sizing, Kelly criterion
+├── main.py               # Main orchestration (~50 lines)
+├── tune.py               # Optuna hyperparameter tuning (Sharpe Ratio)
+└── pyproject.toml        # Dependencies
 ```
 
-## File Descriptions
+**Why this structure?**
+- **No `src/` folder**: Simpler imports
+- **No base classes**: Just functions
+- **Grouped by logic**: data/, strategies/, backtest/
+- **Scalable**: Easy to add new models (e.g., `strategies/lgbm_strategy.py`)
 
-- **main.py** (930 lines)
-  - Fetches OHLCV data from 100+ exchanges via CCXT
-  - Computes 12 technical indicators (RSI, MACD, EMA, Bollinger Bands, volume)
-  - Trains XGBoost model with symbol-specific optimized hyperparameters
-  - Runs standard and walk-forward backtests with risk management
-  - Generates real-time predictions
-  - CLI arguments: --symbol, --exchange, --limit
+## 🔬 Methodology
 
-- **tune.py** (191 lines)
-  - Hyperparameter optimization using Optuna (Bayesian TPE algorithm)
-  - Supports multi-symbol/exchange tuning
-  - Saves symbol-specific config files
-  - CLI arguments: --symbol, --exchange, --trials, --folds, --save
+### Triple Barrier Method
+For each time `t`, we look forward and observe which happens first:
+1. Price hits **+10% upper barrier** → Long win (Label = 1)
+2. Price hits **-5% lower barrier** → Long loss (Label = -1)
+3. **7 days pass** without hitting barriers → Timeout (Label = sign of return)
 
-- **risk_management.py** (251 lines)
-  - RiskManager class with Kelly Criterion position sizing
-  - Stop-loss and take-profit automation
-  - Drawdown tracking and protection
-  - Position size limits and capital preservation
+This creates more realistic labels than "will price go up tomorrow?"
 
-- **hyperparameter_tuning.py** (98 lines)
-  - Reusable Optuna optimization module
-  - Objective function for cross-validation scoring
-  - Model training with optimized parameters
-  - Reusable for future ML experiments
+### Position Sizing
+Combines two methods:
+1. **Volatility Targeting**: `size = (target_vol / current_vol) * capital`
+2. **Kelly Criterion**: `size = kelly_fraction * (win_rate * avg_win - loss_rate * avg_loss)`
+3. Take minimum of both for conservative sizing
 
-## Dependencies
+### Backtest Types
+1. **Standard**: Train once on 80% data, test on 20%
+2. **Walk-Forward**: Retrain every 20 days on sliding 80-day window (more realistic)
 
-- **ccxt** ≥4.0.0: Cryptocurrency exchange APIs (supports 100+ exchanges)
-- **pandas** ≥2.0.0: Data manipulation and analysis
-- **numpy** ≥1.24.0: Numerical computing
-- **xgboost** ≥2.0.0: Gradient boosting machine learning
-- **scikit-learn** ≥1.3.0: Cross-validation and metrics
-- **optuna** ≥3.0.0: Bayesian hyperparameter optimization
+## 📊 Output Example
 
-## Disclaimer
+```
+==================================================
+STANDARD BACKTEST
+==================================================
+Return: 23.45% | P&L: $2,345.67
+Trades: 42 | Win Rate: 61.9%
+Sharpe: 1.82 | Max DD: -8.34%
 
-This is an educational project for learning purposes. Cryptocurrency trading carries significant risk. Past performance does not guarantee future results. Never trade with capital you cannot afford to lose.
+==================================================
+WALK-FORWARD BACKTEST  
+==================================================
+Return: 18.23% | P&L: $1,823.12
+Trades: 38 | Win Rate: 57.9%
+Sharpe: 1.54 | Max DD: -11.21%
 
-## Recent Updates
+==================================================
+TOP 5 FEATURES
+==================================================
+btc_beta: 0.1842
+rsi: 0.1523
+atr_pct: 0.1287
+macd_histogram: 0.1156
+funding_rate: 0.0982
+==================================================
+```
 
-### v2.0 - Multi-Symbol/Exchange Support (Latest)
-- ✅ Added CLI arguments for `--symbol` and `--exchange`
-- ✅ Symbol-specific hyperparameter files (`best_hyperparameters_{SYMBOL}.json`)
-- ✅ Smart default hyperparameters based on asset volatility
-- ✅ Support for 100+ exchanges via CCXT
-- ✅ Improved hyperparameter loading with fallback hierarchy
+## 🔮 Roadmap / Future Enhancements
 
-### v1.3 - Walk-Forward Testing
-- ✅ Walk-forward backtesting with periodic retraining
-- ✅ More realistic performance evaluation
-- ✅ Comparison between standard and walk-forward results
+### 🎯 High Priority
+- [ ] **Probabilistic Targets (Quantile Regression)**
+  - Predict P25, P50, P75 return distributions
+  - Enter trades only when P75 > threshold (high confidence)
+  - Captures uncertainty better than classification
 
-### v1.2 - Risk Management
-- ✅ Kelly Criterion position sizing
-- ✅ Stop-loss and take-profit automation
-- ✅ Drawdown tracking and protection
-- ✅ Comprehensive risk metrics
+- [ ] **Multi-Horizon Predictions**
+  - Predict 1-day, 3-day, 7-day returns simultaneously
+  - Multi-output regression model
+  - More actionable across timeframes
 
-### v1.1 - Technical Indicators Expansion
-- ✅ Added MACD, EMA (9/21/50), Bollinger Bands
-- ✅ Volume analysis (change, SMA ratio)
-- ✅ Expanded from 4 to 12 features
-- ✅ Improved prediction accuracy
+### 🔧 Medium Priority
+- [ ] **Alternative Models**
+  - LightGBM (faster, better for time series)
+  - Random Forest (simpler baseline)
+  - Ensemble: Linear + Tree models
 
-### v1.0 - Initial Release
-- ✅ XGBoost classification model
-- ✅ RSI and basic volume indicators
-- ✅ Standard backtesting
-- ✅ Hyperparameter tuning via Optuna
+- [ ] **Cross-Asset Features**
+  - SPY correlation (equity market sentiment)
+  - DXY (dollar strength)
+  - Gold correlation (risk-off indicator)
 
-## Future Enhancements
+- [ ] **Advanced Indicators**
+  - On-Balance Volume (OBV)
+  - Ichimoku Cloud
+  - ADX (trend strength)
 
-- [ ] Real-time trading integration with exchange APIs
-- [ ] Automated position management via WebSockets
-- [ ] Multi-timeframe analysis (1h, 4h, 1d combined)
-- [ ] Ensemble methods combining multiple models
-- [ ] Additional indicators (Volume Profile, Order Flow Imbalance)
-- [ ] Portfolio-level risk management across multiple positions
-- [ ] Alerts and notifications (email, Telegram)
-- [ ] Web dashboard for monitoring and control
-- [ ] Feature importance analysis and visualization
-- [ ] Sentiment/macro data integration
-- [ ] Trade history export (CSV/JSON)
-- [ ] Equity curve visualization
-- [ ] Monthly/weekly P&L reporting
-- [ ] Model performance metrics (precision, recall, F1-score)
-- [ ] Correlation analysis with other assets
+### 🚀 Advanced
+- [ ] **Online Learning**
+  - Incremental model updates without full retraining
+  - Libraries: Vowpal Wabbit, River
 
-## License
+- [ ] **Multi-Timeframe Models**
+  - Combine 1h + 1d data for better signals
 
-MIT License
+- [ ] **Reinforcement Learning**
+  - RL-based position sizing and timing
+
+## 🤝 Contributing
+
+Contributions welcome! Please:
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit changes (`git commit -m 'Add amazing feature'`)
+4. Push to branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## 📝 License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## ⚠️ Disclaimer
+
+**This software is for educational and research purposes only.**
+
+- Not financial advice
+- No guarantees of profitability
+- Past performance ≠ future results  
+- Cryptocurrency trading involves substantial risk of loss
+- Only trade with capital you can afford to lose
+
+Always do your own research and consult with financial advisors before trading.
+
+## 📧 Contact
+
+- GitHub: [@JustR3](https://github.com/JustR3)
+- Issues: [GitHub Issues](https://github.com/JustR3/hyperliquid-predictor/issues)
+
+---
+
+**Star ⭐ this repo if you find it useful!**

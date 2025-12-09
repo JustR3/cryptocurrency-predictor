@@ -1,265 +1,144 @@
 #!/usr/bin/env python3
 """
-Hyperparameter tuning script for the XGBoost model.
-
-This script optimizes model hyperparameters using Optuna and saves the best configuration.
-Run this to find optimal hyperparameters before using them in main.py.
-
-Usage:
-    uv run tune.py --trials 100
+Hyperparameter tuning script using Optuna.
+Optimizes for Sharpe Ratio instead of accuracy.
 """
 
 import argparse
-import json
 
-import ccxt
-import pandas as pd
-from sklearn.metrics import accuracy_score
-from sklearn.model_selection import train_test_split
+import numpy as np
+import optuna
+from optuna.pruners import MedianPruner
+from optuna.samplers import TPESampler
+from sklearn.model_selection import TimeSeriesSplit
+from xgboost import XGBClassifier
 
-from hyperparameter_tuning import get_tuned_model, tune_hyperparameters
-
-
-def compute_rsi(prices, period=14):
-    """Calculate RSI (Relative Strength Index)"""
-    delta = prices.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
+import config
+from data.fetcher import fetch_btc_data, fetch_funding_rate, fetch_ohlcv
+from data.processor import create_features, create_triple_barrier_labels
+from strategies.xgb_strategy import save_hyperparameters
 
 
-def compute_ema(prices, period):
-    """Calculate Exponential Moving Average"""
-    return prices.ewm(span=period, adjust=False).mean()
+def calculate_sharpe_ratio_cv(model, X, y, n_splits=5):
+    """
+    Calculate Sharpe ratio via time series cross-validation.
+
+    Simulates a simple long-only strategy based on predictions.
+    """
+    tscv = TimeSeriesSplit(n_splits=n_splits)
+    sharpe_ratios = []
+
+    for train_idx, val_idx in tscv.split(X):
+        X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
+        y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+
+        model.fit(X_train, y_train)
+        predictions = model.predict(X_val)
+
+        # Simple strategy: long when prediction is positive
+        strategy_returns = []
+        for i, pred in enumerate(predictions):
+            if i < len(y_val) - 1:
+                actual_label = y_val.iloc[i]
+                # Simulate return based on prediction correctness
+                if pred == 1 and actual_label == 1:
+                    strategy_returns.append(0.02)  # Win
+                elif pred == 1 and actual_label == -1:
+                    strategy_returns.append(-0.01)  # Loss
+                else:
+                    strategy_returns.append(0.0)  # No trade
+
+        if len(strategy_returns) > 0:
+            returns_array = np.array(strategy_returns)
+            mean_return = np.mean(returns_array)
+            std_return = np.std(returns_array)
+            sharpe = (mean_return / (std_return + 1e-6)) * np.sqrt(252)
+            sharpe_ratios.append(sharpe)
+
+    return np.mean(sharpe_ratios) if sharpe_ratios else 0.0
 
 
-def compute_macd(prices, fast=12, slow=26, signal=9):
-    """Calculate MACD (Moving Average Convergence Divergence)"""
-    ema_fast = compute_ema(prices, fast)
-    ema_slow = compute_ema(prices, slow)
-    macd_line = ema_fast - ema_slow
-    signal_line = compute_ema(macd_line, signal)
-    macd_histogram = macd_line - signal_line
-    return macd_line, signal_line, macd_histogram
+def objective(trial, X_train, y_train, n_splits=5):
+    """Optuna objective function optimizing Sharpe Ratio."""
+    params = {
+        "n_estimators": trial.suggest_int("n_estimators", 50, 500),
+        "max_depth": trial.suggest_int("max_depth", 2, 10),
+        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3),
+        "subsample": trial.suggest_float("subsample", 0.5, 1.0),
+        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
+        "min_child_weight": trial.suggest_int("min_child_weight", 1, 10),
+        "gamma": trial.suggest_float("gamma", 0, 5),
+        "random_state": config.RANDOM_STATE,
+        "objective": "multi:softmax",
+        "num_class": 3,  # -1, 0, 1
+    }
 
+    model = XGBClassifier(**params)
+    sharpe = calculate_sharpe_ratio_cv(model, X_train, y_train, n_splits)
 
-def compute_bollinger_bands(prices, period=20, num_std=2):
-    """Calculate Bollinger Bands"""
-    sma = prices.rolling(window=period).mean()
-    std = prices.rolling(window=period).std()
-    upper_band = sma + (std * num_std)
-    lower_band = sma - (std * num_std)
-    bb_position = (prices - lower_band) / (upper_band - lower_band)
-    return upper_band, lower_band, bb_position
+    return sharpe
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Tune XGBoost hyperparameters for cryptocurrency prediction"
-    )
-    parser.add_argument(
-        "--trials", type=int, default=100, help="Number of optimization trials (default: 100)"
-    )
-    parser.add_argument("--folds", type=int, default=5, help="Number of CV folds (default: 5)")
-    parser.add_argument("--save", action="store_true", help="Save best parameters to file")
-    parser.add_argument(
-        "--symbol",
-        type=str,
-        default="HYPE/USDT",
-        help="Trading pair symbol (e.g., BTC/USDT, ETH/USDT)",
-    )
-    parser.add_argument(
-        "--exchange",
-        type=str,
-        default="hyperliquid",
-        help="Exchange name (e.g., binance, coinbase, kraken)",
-    )
-    parser.add_argument(
-        "--limit", type=int, default=200, help="Number of days of historical data (default: 200)"
-    )
-
+    parser = argparse.ArgumentParser(description="Tune hyperparameters for Sharpe Ratio")
+    parser.add_argument("--symbol", type=str, default=config.DEFAULT_SYMBOL, help="Trading pair")
+    parser.add_argument("--exchange", type=str, default=config.DEFAULT_EXCHANGE, help="Exchange")
+    parser.add_argument("--limit", type=int, default=None, help="Days of data")
+    parser.add_argument("--trials", type=int, default=config.OPTUNA_N_TRIALS, help="Trials")
+    parser.add_argument("--folds", type=int, default=config.OPTUNA_N_FOLDS, help="CV folds")
+    parser.add_argument("--save", action="store_true", help="Save best parameters")
     args = parser.parse_args()
 
-    symbol = args.symbol
-    exchange_name = args.exchange.lower()
-    limit = args.limit
+    print(f"\n{'=' * 60}")
+    print(f"HYPERPARAMETER TUNING - {args.symbol}")
+    print(f"Optimizing for: {config.OPTUNA_METRIC.upper()}")
+    print(f"{'=' * 60}\n")
 
-    print("=" * 60)
-    print(f"XGBoost Hyperparameter Tuning for {symbol}")
-    print("=" * 60)
-    print()
+    # Fetch and prepare data
+    print(f"Fetching {args.symbol} data...")
+    df = fetch_ohlcv(args.symbol, args.exchange, args.limit)
+    btc_df = fetch_btc_data(args.exchange, args.limit) if "BTC" not in args.symbol else df
+    funding_df = fetch_funding_rate(args.symbol, args.exchange, args.limit)
 
-    # Fetch data with rate limiting enabled
-    print(f"Fetching {symbol} data from {exchange_name}...")
-    try:
-        if exchange_name == "hyperliquid":
-            exchange = ccxt.hyperliquid({"enableRateLimit": True})
-        elif exchange_name == "binance":
-            exchange = ccxt.binance({"enableRateLimit": True})
-        elif exchange_name == "coinbase":
-            exchange = ccxt.coinbase({"enableRateLimit": True})
-        elif exchange_name == "kraken":
-            exchange = ccxt.kraken({"enableRateLimit": True})
-        elif exchange_name == "bybit":
-            exchange = ccxt.bybit({"enableRateLimit": True})
-        elif exchange_name == "okx":
-            exchange = ccxt.okx({"enableRateLimit": True})
-        else:
-            exchange_class = getattr(ccxt, exchange_name)
-            exchange = exchange_class({"enableRateLimit": True})
-    except AttributeError:
-        print(f"Error: Exchange '{exchange_name}' not supported")
-        return
-    except Exception as e:
-        print(f"Error initializing exchange: {e}")
-        return
-
-    try:
-        ohlcv = exchange.fetch_ohlcv(symbol, "1d", limit=limit)
-        if len(ohlcv) < 50:
-            print(f"Error: Insufficient data. Got {len(ohlcv)} days, need at least 50")
-            return
-    except Exception as e:
-        print(f"Error fetching data: {e}")
-        return
-    df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-
-    # Calculate features
-    df["rsi"] = compute_rsi(df["close"], 14)
-
-    # MACD indicators
-    macd_line, signal_line, macd_histogram = compute_macd(df["close"])
-    df["macd"] = macd_line
-    df["macd_signal"] = signal_line
-    df["macd_histogram"] = macd_histogram
-
-    # Bollinger Bands
-    upper_band, lower_band, bb_position = compute_bollinger_bands(df["close"])
-    df["bb_upper"] = upper_band
-    df["bb_lower"] = lower_band
-    df["bb_position"] = bb_position
-
-    # EMA indicators
-    df["ema_9"] = compute_ema(df["close"], 9)
-    df["ema_21"] = compute_ema(df["close"], 21)
-    df["ema_50"] = compute_ema(df["close"], 50)
-
-    # Price relative to EMAs
-    df["price_above_ema9"] = (df["close"] > df["ema_9"]).astype(int)
-    df["price_above_ema21"] = (df["close"] > df["ema_21"]).astype(int)
-    df["price_above_ema50"] = (df["close"] > df["ema_50"]).astype(int)
-
-    # Volume analysis
-    df["vol_change"] = df["volume"].pct_change().fillna(0)
-    df["vol_sma_ratio"] = df["volume"] / df["volume"].rolling(window=20).mean()
-
-    # Price momentum
-    df["price_change"] = df["close"].pct_change().shift(-1)
-    df["price_momentum_5d"] = df["close"].pct_change(5)
-
-    # Manual inputs
-    df["macro_score"] = 0.6
-    df["unlock_pressure"] = 0.15
-
-    # Regime Classification Target (0=Bull, 1=Ranging, 2=Bear, 3=HighVol)
-    def classify_regime(data):
-        """Classify market regime for tuning."""
-        regimes = pd.Series(index=data.index, dtype=int)
-        weekly_return = data["close"].pct_change(7).shift(-7)
-        volatility = data["close"].pct_change().rolling(14).std().shift(-7)
-        momentum_3d = data["close"].pct_change(3).shift(-7)
-
-        # High Vol
-        high_vol = (volatility > volatility.quantile(0.75)) & (abs(weekly_return) > 0.15)
-        regimes.loc[high_vol] = 3
-
-        # Bull
-        bull = (weekly_return > 0.10) & (momentum_3d > 0.03) & (regimes != 3)
-        regimes.loc[bull] = 0
-
-        # Bear
-        bear = (weekly_return < -0.05) & (momentum_3d < -0.02) & (regimes != 3)
-        regimes.loc[bear] = 2
-
-        # Ranging
-        ranging = (abs(weekly_return) <= 0.03) & (volatility <= volatility.quantile(0.50))
-        regimes.loc[ranging & (regimes != 3)] = 1
-
-        regimes.fillna(1, inplace=True)
-        return regimes.astype(int)
-
-    df["target"] = classify_regime(df)
-
-    # Drop NaNs
+    df = create_features(df, btc_df, funding_df)
+    df["target"] = create_triple_barrier_labels(df)
+    # Remap labels from {-1, 0, 1} to {0, 1, 2} for XGBoost
+    df["target"] = df["target"].map({-1: 0, 0: 1, 1: 2})
     df = df.dropna()
 
-    print(f"Data points: {len(df)}")
-    print()
-
-    # Prepare training data
-    feature_columns = [
-        "rsi",
-        "macd",
-        "macd_histogram",
-        "bb_position",
-        "price_above_ema9",
-        "price_above_ema21",
-        "price_above_ema50",
-        "vol_change",
-        "vol_sma_ratio",
-        "price_momentum_5d",
-        "macro_score",
-        "unlock_pressure",
-    ]
-    X = df[feature_columns]
+    X = df[config.FEATURE_COLUMNS]
     y = df["target"]
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
+    split_idx = int(len(df) * (1 - config.TEST_SIZE))
+    X_train, y_train = X.iloc[:split_idx], y.iloc[:split_idx]
 
-    print(f"Training set size: {len(X_train)}")
-    print(f"Test set size: {len(X_test)}")
-    print()
+    print(f"Training set: {len(X_train)} samples")
+    print(f"Starting optimization ({args.trials} trials)...\n")
 
     # Run optimization
-    print(f"Starting hyperparameter optimization ({args.trials} trials, {args.folds}-fold CV)...")
-    print()
+    sampler = TPESampler(seed=config.RANDOM_STATE)
+    pruner = MedianPruner(n_warmup_steps=10)
+    study = optuna.create_study(direction="maximize", sampler=sampler, pruner=pruner)
 
-    best_params = tune_hyperparameters(
-        X_train, y_train, n_trials=args.trials, n_splits=args.folds, verbose=True
+    study.optimize(
+        lambda trial: objective(trial, X_train, y_train, args.folds),
+        n_trials=args.trials,
+        show_progress_bar=True,
     )
 
-    print()
-    print("=" * 60)
+    print(f"\n{'=' * 60}")
+    print("OPTIMIZATION COMPLETE")
+    print(f"{'=' * 60}")
+    print(f"Best Sharpe Ratio: {study.best_value:.4f}")
+    print("\nBest Hyperparameters:")
+    for key, value in study.best_params.items():
+        print(f"  {key}: {value}")
 
-    # Train final model with best parameters
-    print("\nTraining final model with best parameters...")
-    model = get_tuned_model(X_train, y_train, best_params)
-
-    # Evaluate
-    train_acc = accuracy_score(y_train, model.predict(X_train))
-    test_acc = accuracy_score(y_test, model.predict(X_test))
-
-    print(f"Train Accuracy: {train_acc:.4f}")
-    print(f"Test Accuracy: {test_acc:.4f}")
-    print()
-
-    # Save if requested
     if args.save:
-        safe_symbol = symbol.replace("/", "_")
-        filename = f"best_hyperparameters_{safe_symbol}.json"
-        with open(filename, "w") as f:
-            json.dump(best_params, f, indent=2)
-        print(f"✓ Best parameters saved to {filename}")
-        print(f"  Optimized specifically for {symbol}")
-        print()
-        print("To use these parameters, run:")
-        print(f"  uv run main.py --symbol {symbol} --exchange {exchange_name}")
-        print()
+        save_hyperparameters(study.best_params, args.symbol)
+        print(f"\nTo use: python main.py --symbol {args.symbol} --exchange {args.exchange}")
 
-    print("=" * 60)
+    print(f"{'=' * 60}\n")
 
 
 if __name__ == "__main__":
