@@ -184,7 +184,7 @@ def main():
             "BNB/USDT",
             "ADA/USDT",
             "AVAX/USDT",
-            "MATIC/USDT",
+            "POL/USDT",
             "LINK/USDT",
         ],
         help="List of trading pairs to analyze",

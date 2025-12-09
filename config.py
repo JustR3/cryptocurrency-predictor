@@ -20,7 +20,7 @@ DEFAULT_DATA_LIMIT_DAYS = {
     "ADA": 365,
     "AVAX": 365,
     "DOT": 365,
-    "MATIC": 365,
+    "POL": 365,
     "LINK": 365,
     "default": 180,  # 6 months for low caps
 }
@@ -160,7 +160,7 @@ def get_asset_class(symbol: str) -> str:
     symbol_upper = symbol.upper()
     if any(x in symbol_upper for x in ["BTC", "ETH"]):
         return "major_caps"
-    elif any(x in symbol_upper for x in ["SOL", "BNB", "ADA", "AVAX", "DOT", "MATIC", "LINK"]):
+    elif any(x in symbol_upper for x in ["SOL", "BNB", "ADA", "AVAX", "DOT", "POL", "LINK"]):
         return "mid_caps"
     else:
         return "low_caps"

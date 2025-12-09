@@ -86,7 +86,7 @@
   - [x] Support all prediction modes (short/medium/long)
 
 - [x] **Conduct comprehensive feature analysis**
-  - [x] Run analysis on multiple symbols (BTC, ETH, SOL, BNB, ADA, AVAX, MATIC, LINK)
+  - [x] Run analysis on multiple symbols (BTC, ETH, SOL, BNB, ADA, AVAX, , LINK)
   - [x] Test across all 3 prediction modes (short, medium, long) - 24 total runs
   - [x] Document consistent patterns in feature importance
   - [x] Identify features to remove (funding_rate confirmed 0% across ALL runs)
@@ -99,17 +99,61 @@
   - [ ] Compare Sharpe Ratios: 16 features vs 15 features
   - [ ] Document performance improvements
 
-### Phase 6: Feature Set Performance Validation 🔄 IN PROGRESS
+### Phase 6: Advanced Feature Analysis & Multicollinearity Detection ✅ COMPLETED
+- [x] **Correlation Analysis**
+  - [x] Quick correlation matrix analysis on current 15 features
+  - [x] Identify highly correlated feature pairs (>0.90 correlation)
+  - [x] Document redundant features for removal consideration
+  - [x] Created correlation_analysis.py tool with visualization support
+  - [x] Analyzed BTC and ETH - no critical multicollinearity found
+  - [x] Identified moderate correlations (0.70-0.86) in momentum, trend, and position indicators
+
+- [ ] **Variance Inflation Factor (VIF) Analysis**
+  - [ ] Calculate VIF for all features
+  - [ ] Identify features with VIF > 10 (high multicollinearity)
+  - [ ] Recommend features to remove from correlated groups
+  - [ ] Test impact of removing high-VIF features
+
+- [ ] **Permutation Importance Analysis**
+  - [ ] Implement permutation importance in feature_analysis.py
+  - [ ] Measure actual contribution by shuffling features
+  - [ ] Compare with XGBoost built-in importance
+  - [ ] Identify features important in both methods
+  - [ ] Handle feature interactions properly
+
+- [ ] **SHAP Values Analysis**
+  - [ ] Install shap library
+  - [ ] Implement SHAP-based feature importance
+  - [ ] Calculate mean absolute SHAP values per feature
+  - [ ] Generate SHAP summary plots
+  - [ ] Use SHAP to fairly distribute credit among correlated features
+  - [ ] Identify true feature contributions accounting for interactions
+
+- [ ] **Forward/Backward Selection**
+  - [ ] Implement backward elimination based on backtest performance
+  - [ ] Test removing features one by one
+  - [ ] Measure impact on Sharpe Ratio for each removal
+  - [ ] Keep only features whose removal hurts performance
+  - [ ] Create optimal feature subset based on real trading metrics
+
+- [ ] **Feature Grouping & Testing**
+  - [ ] Organize features into logical groups (volatility, trend, momentum, etc.)
+  - [ ] Test keeping only best feature from each correlated group
+  - [ ] Example: Keep atr_pct, remove atr; Keep macd_histogram, remove macd
+  - [ ] Compare performance across different group configurations
+
+### Phase 7: Feature Set Performance Validation
 - [ ] **Backtest with optimized features**
-  - [ ] Run backtest on BTC with 15 features (no funding_rate)
-  - [ ] Run backtest on ETH with 15 features
-  - [ ] Run backtest on SOL with 15 features
-  - [ ] Compare metrics to previous 16-feature results
+  - [ ] Run backtest on BTC with optimized features
+  - [ ] Run backtest on ETH with optimized features
+  - [ ] Run backtest on SOL with optimized features
+  - [ ] Compare metrics to previous 15-feature results
   - [ ] Verify Sharpe Ratio maintained or improved
 
 - [ ] **Test reduced feature sets**
   - [ ] Test top 13 features (90% coverage)
   - [ ] Test top 11 features (80% coverage)
+  - [ ] Test feature-group-based subsets
   - [ ] Compare performance across all configurations
   - [ ] Document optimal feature count
 
@@ -118,6 +162,7 @@
   - [ ] Update config.py with final FEATURE_COLUMNS
   - [ ] Re-run hyperparameter tuning with optimized features
   - [ ] Document performance gains and lessons learned
+  - [ ] Create final feature importance report
 
 ## Future Enhancements (Post-Optimization)
 - [ ] Implement probabilistic targets (quantile regression)

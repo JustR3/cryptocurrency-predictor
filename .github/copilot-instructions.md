@@ -2,6 +2,20 @@
 
 ## Agentic Workflow Rules
 
+### 0. Package Management & Script Execution
+**ALWAYS use UV for package management and script execution:**
+
+**Package Management:**
+- Use `uv add <package>` to install packages
+- Use `uv remove <package>` to uninstall packages
+- Use `uv sync` to synchronize dependencies
+- Never use `pip install`, `pip uninstall`, or similar pip commands
+
+**Script Execution:**
+- Use `uv run <script.py>` to run Python scripts
+- Never use `python <script.py>` or `python3 <script.py>`
+- Examples: `uv run main.py`, `uv run tune.py --symbol BTC/USDT`
+
 ### 1. Task Execution Process
 For every task in [`TODO.md`](../TODO.md):
 
