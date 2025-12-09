@@ -41,9 +41,11 @@ MOMENTUM_PERIODS = [3, 5, 7]  # Days for momentum calculation
 VOLATILITY_WINDOW = 14
 
 # Triple Barrier Method Parameters
-BARRIER_PROFIT_PCT = 0.10  # 10% take profit
-BARRIER_LOSS_PCT = 0.05  # 5% stop loss
-BARRIER_TIME_HORIZON = 7  # 7 days max holding period
+# Adjusted for realistic daily trading (not swing trading)
+# 2:1 risk/reward ratio with tighter, achievable targets
+BARRIER_PROFIT_PCT = 0.04  # 4% take profit (realistic for crypto)
+BARRIER_LOSS_PCT = 0.02  # 2% stop loss (2:1 ratio)
+BARRIER_TIME_HORIZON = 5  # 5 days max holding period
 
 # Risk Management
 MAX_DRAWDOWN_PCT = 0.15  # 15% max drawdown
@@ -53,6 +55,12 @@ TAKE_PROFIT_PCT = 0.08  # 8% take profit
 KELLY_FRACTION = 0.30  # Use 30% of Kelly criterion
 MIN_POSITION_SIZE_PCT = 0.01  # 1% minimum position
 TARGET_VOLATILITY = 0.15  # 15% annualized volatility target
+
+# Model Prediction Thresholds
+# Using probabilistic approach instead of hard predictions
+ENTRY_PROB_THRESHOLD = 0.40  # Minimum probability for profit class
+ENTRY_EDGE_RATIO = 1.3  # P(profit) must be 1.3x > P(loss)
+EXIT_PROB_THRESHOLD = 0.35  # Exit if profit probability drops below this
 
 # Model Settings
 RANDOM_STATE = 42

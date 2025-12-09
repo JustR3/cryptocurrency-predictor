@@ -372,6 +372,20 @@ def backtest_strategy(
     df["prediction"] = label_encoder.inverse_transform(predictions_encoded)
     df["confidence"] = [probs[pred] for probs, pred in zip(probs_encoded, predictions_encoded)]
 
+    # Add probability columns for each class (0=loss, 1=neutral, 2=profit)
+    # Handle case where not all classes are present in label_encoder
+    df["prob_loss"] = 0.0
+    df["prob_neutral"] = 0.0
+    df["prob_profit"] = 0.0
+
+    for i, class_label in enumerate(label_encoder.classes_):
+        if class_label == 0:
+            df["prob_loss"] = probs_encoded[:, i]
+        elif class_label == 1:
+            df["prob_neutral"] = probs_encoded[:, i]
+        elif class_label == 2:
+            df["prob_profit"] = probs_encoded[:, i]
+
     # Initialize tracking
     capital = initial_capital
     position = 0
@@ -395,14 +409,18 @@ def backtest_strategy(
                 current_price, entry_price, "long"
             )
 
-            # Also check prediction-based exit
-            prediction = df["prediction"].iloc[i]
-            confidence = df["confidence"].iloc[i]
+            # Also check prediction-based exit using probabilities
+            prob_profit = df["prob_profit"].iloc[i]
+            prob_loss = df["prob_loss"].iloc[i]
 
-            # Exit if prediction turns bearish (0) or low confidence
-            if prediction == 0 or confidence < 0.35:
+            # Exit if profit probability drops below threshold OR loss probability dominates
+            if prob_profit < config.EXIT_PROB_THRESHOLD or prob_loss > prob_profit:
                 should_exit = True
-                exit_reason = "signal" if prediction == 0 else "low_confidence"
+                exit_reason = (
+                    "low_profit_probability"
+                    if prob_profit < config.EXIT_PROB_THRESHOLD
+                    else "loss_probability_high"
+                )
 
             if should_exit:
                 # Apply slippage and fees
@@ -435,11 +453,16 @@ def backtest_strategy(
 
         # Entry signals
         if position == 0:
-            prediction = df["prediction"].iloc[i]
-            confidence = df["confidence"].iloc[i]
+            prob_profit = df["prob_profit"].iloc[i]
+            prob_loss = df["prob_loss"].iloc[i]
 
-            # Enter long if prediction is bullish (2) and confident
-            should_enter = prediction == 2 and confidence > 0.55
+            # Enter long using probabilistic approach:
+            # 1. Profit probability above threshold
+            # 2. Profit probability is significantly higher than loss probability
+            should_enter = (
+                prob_profit > config.ENTRY_PROB_THRESHOLD
+                and prob_profit > prob_loss * config.ENTRY_EDGE_RATIO
+            )
 
             if should_enter:
                 # Calculate position size using volatility targeting
@@ -477,7 +500,7 @@ def backtest_strategy(
 
                     position = 1
                     entry_idx = i
-                    entry_confidence = confidence
+                    entry_confidence = prob_profit  # Track profit probability at entry
 
         # Update equity curve
         current_equity = capital
@@ -659,6 +682,18 @@ def walk_forward_backtest(
         prediction = label_encoder.inverse_transform(predictions_encoded)[0]
         confidence = probs_encoded[0][predictions_encoded[0]]
 
+        # Extract probabilities for each class
+        prob_loss = 0.0
+        prob_neutral = 0.0
+        prob_profit = 0.0
+        for j, class_label in enumerate(label_encoder.classes_):
+            if class_label == 0:
+                prob_loss = probs_encoded[0][j]
+            elif class_label == 1:
+                prob_neutral = probs_encoded[0][j]
+            elif class_label == 2:
+                prob_profit = probs_encoded[0][j]
+
         current_price = df.loc[i, "close"]
 
         # Check exits
@@ -667,9 +702,14 @@ def walk_forward_backtest(
                 current_price, entry_price, "long"
             )
 
-            if prediction == 0 or confidence < 0.35:
+            # Exit if profit probability drops below threshold OR loss probability dominates
+            if prob_profit < config.EXIT_PROB_THRESHOLD or prob_loss > prob_profit:
                 should_exit = True
-                exit_reason = "signal" if prediction == 0 else "low_confidence"
+                exit_reason = (
+                    "low_profit_probability"
+                    if prob_profit < config.EXIT_PROB_THRESHOLD
+                    else "loss_probability_high"
+                )
 
             if should_exit:
                 exit_price = apply_slippage_and_fees(current_price, "sell")
@@ -701,7 +741,11 @@ def walk_forward_backtest(
 
         # Entry signals
         if position == 0:
-            should_enter = prediction == 2 and confidence > 0.55
+            # Enter long using probabilistic approach
+            should_enter = (
+                prob_profit > config.ENTRY_PROB_THRESHOLD
+                and prob_profit > prob_loss * config.ENTRY_EDGE_RATIO
+            )
 
             if should_enter:
                 position_size_dollars = calculate_position_size_volatility_targeting(
@@ -734,7 +778,7 @@ def walk_forward_backtest(
 
                     position = 1
                     entry_idx = i
-                    entry_confidence = confidence
+                    entry_confidence = prob_profit  # Track profit probability at entry
 
         # Update equity
         current_equity = capital
