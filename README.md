@@ -26,7 +26,7 @@ This captures realistic trade outcomes and is superior to arbitrary threshold cl
 - **Funding Rates**: Perpetual futures funding rates (sentiment indicator)
 - **Volume Analysis**: Volume change, volume/SMA ratio
 - **Price Momentum**: Multi-timeframe momentum (3d, 5d, 7d)
-- ❌ **Removed**: Manual macro scores (was static noise)
+
 
 ### 3. **Volatility Targeting**
 Position sizing scales inversely with volatility to maintain constant risk:
@@ -238,11 +238,6 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - Only trade with capital you can afford to lose
 
 Always do your own research and consult with financial advisors before trading.
-
-## 📧 Contact
-
-- GitHub: [@JustR3](https://github.com/JustR3)
-- Issues: [GitHub Issues](https://github.com/JustR3/hyperliquid-predictor/issues)
 
 ---
 
