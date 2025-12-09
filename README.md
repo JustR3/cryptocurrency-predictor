@@ -113,8 +113,7 @@ hyperliquid-predictor/
 ├── strategies/
 │   └── xgb_strategy.py   # XGBoost model training/prediction
 ├── backtest/
-│   └── engine.py         # Volatility targeting + cost modeling
-├── risk_management.py    # Position sizing, Kelly criterion
+│   └── engine.py         # Backtesting + RiskManager + volatility targeting
 ├── main.py               # Main orchestration (~50 lines)
 ├── tune.py               # Optuna hyperparameter tuning (Sharpe Ratio)
 └── pyproject.toml        # Dependencies
