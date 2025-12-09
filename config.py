@@ -4,8 +4,8 @@ All settings in one place.
 """
 
 # Trading Settings
-DEFAULT_SYMBOL = "HYPE/USDT"
-DEFAULT_EXCHANGE = "hyperliquid"
+DEFAULT_SYMBOL = "BTC/USDT"
+DEFAULT_EXCHANGE = "binance"
 DEFAULT_INITIAL_CAPITAL = 10000
 TRADING_FEE_BPS = 5  # 5 basis points = 0.05%
 SLIPPAGE_BPS = 10  # 10 basis points = 0.1%
